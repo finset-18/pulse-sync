@@ -56,6 +56,7 @@ jobs:
           DATA_DIR: ${{ github.workspace }}/store/data
           WORKERS: "48"
           EXTRA_EVERY_H: "1"
+          RENDER_EVERY_H: "0.5"
           LOOP_MIN: "330"
           EVERY_S: "300"
           FORCE_RENDER: ${{ github.event.inputs.render }}
