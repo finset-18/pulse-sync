@@ -270,6 +270,7 @@ def main():
             if oid in offers:
                 o = offers[oid]; o['status'] = 'open'; o.pop('closed_at', None); o.pop('miss', None)
                 if (o.get('last_seen') or '') <= FRESH: o['last_seen'] = NOW_ISO
+                if not o.get('site') and site_of(c): o['site'] = site_of(c)
                 if x.get('src'): o['via'] = x['src']
                 continue
             o = {'id': oid, 'company_id': cid, 'company': c['name'], 'fam': c.get('fam', ''), 'site': site_of(c),

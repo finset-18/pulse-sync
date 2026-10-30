@@ -84,7 +84,8 @@ def run_jobspy(site, country, loc, q):
         u = _s(r.get('job_url'))
         if not u.startswith('http'):
             continue
-        out.append({'title': _s(r.get('title')), 'company': _s(r.get('company')), 'url': u, 'location': _s(r.get('location'))[:120],
+        out.append({'title': _s(r.get('title')), 'company': _s(r.get('company')), 'url': u, 'location': re.sub(r',\s*[A-Z]{1,2}\d{1,2}\b', '', _s(r.get('location')))[:120],
+                    'csite': _s(r.get('company_url_direct')) if _s(r.get('company_url_direct')).startswith('http') else '',
                     'posted': _date(r.get('date_posted')), 'ext': site + ':' + (_s(r.get('id')) or u),
                     'desc': _s(r.get('description'))[:4000], 'commit': _s(r.get('job_type')), 'src': site})
     return out
@@ -174,7 +175,7 @@ def run_aggregators(structs, recettes, run_no, log=print):
     fast = {cid for cid, r in recettes.items() if any(m.get('m') in FAST for m in (r.get('methods') or []))}
     results, pseudo, dedup = {}, {}, set()
     for x in rows:
-        title, comp = x['title'], x.pop('company', '')
+        title, comp, csite = x['title'], x.pop('company', ''), x.pop('csite', '')
         if not title or not comp or not is_intern(title) or not FIN_TITLE.search(title + ' ' + comp):
             continue
         cid = match_name(comp, idx)
@@ -187,7 +188,9 @@ def run_aggregators(structs, recettes, run_no, log=print):
             if len(key) < 3:
                 continue
             cid = 'h_in_' + key[:40]
-            pseudo.setdefault(cid, {'id': cid, 'name': comp[:80], 'fam': '', 'city': '', 'site': '', 'url': '', 'hors_liste': True})
+            ps = pseudo.setdefault(cid, {'id': cid, 'name': comp[:80], 'fam': '', 'city': '', 'site': '', 'url': '', 'hors_liste': True})
+            if csite and not ps['site']:
+                ps['site'] = csite  # site de l'entreprise (pour son logo), jamais celui de l'agrégateur
         dk = (cid, _norm(title), country_of(x.get('location') or ''))
         if dk in dedup:
             continue  # même offre vue sur plusieurs agrégateurs
