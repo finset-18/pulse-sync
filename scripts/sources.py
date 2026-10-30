@@ -12,7 +12,7 @@ Sources complémentaires du robot de veille.
 import re, json, time, datetime as dt
 from commun import load, clean, is_intern, FIN_TITLE, iso, _norm, COUNTRIES, country_of
 
-AGG = ('indeed',)
+AGG = ('indeed', 'glassdoor', 'google', 'francetravail')
 FAST = ('ats', 'api', 'html', 'wttj')
 # intitulé de poste financier (plus strict que FIN_TITLE, qui accepte « marketing ») : exigé hors liste
 HL_TITLE = re.compile(r"financ|m&a|merger|fusion|acquisition|private equity|capital[- ]invest|venture|\blbo\b|invest|asset|wealth|patrimoin|"
