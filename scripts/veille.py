@@ -23,7 +23,8 @@ SCHEMA = 2
 WORKERS = int(os.environ.get('WORKERS', '32'))
 MAX_DETAILS = int(os.environ.get('MAX_DETAILS', '400'))
 RENDER = os.environ.get('RENDER', '') == '1'
-EXTRA = os.environ.get('EXTRA', '') == '1'  # passage étendu : agrégateurs + sociétés hors liste
+EXTRA = os.environ.get('EXTRA', '') == '1'  # passage étendu : sociétés hors liste
+AGGR = os.environ.get('AGGR', '1') == '1'  # agrégateurs (Indeed, Glassdoor, Google, France Travail), par tranches à chaque passage
 FAIL_N = int(os.environ.get('FAIL_N', '36'))  # échecs de suite avant « à revoir » (36 passages de 5 min = 3 h)
 RENDER_CONC = int(os.environ.get('RENDER_CONC', '6'))
 T0 = time.time()
@@ -36,7 +37,8 @@ GRACE = (NOW - dt.timedelta(hours=36)).isoformat().replace('+00:00', 'Z')
 STALE = (NOW - dt.timedelta(days=6)).isoformat().replace('+00:00', 'Z')  # source douteuse depuis 6 jours : fermée
 FRESH = (NOW - dt.timedelta(hours=3)).isoformat().replace('+00:00', 'Z')  # last_seen réécrit au plus toutes les 3 h (fichier stable entre deux passages)
 SWEEP = (NOW - dt.timedelta(days=8)).isoformat().replace('+00:00', 'Z')  # offres d'agrégateurs ou hors liste non revues depuis 8 jours : fermées
-from sources import AGG, HL_TITLE, country_ok, is_hl, merge_annuaire, hors_liste, run_indeed, merge_results
+from sources import AGG, HL_TITLE, country_ok, is_hl, merge_annuaire, hors_liste, merge_results
+from agregateurs import run_aggregators
 from commun import _norm
 
 
@@ -212,8 +214,8 @@ def main():
             try: results[c['id']] = f.result()
             except Exception as e: results[c['id']] = ([], {'id': c['id'], 'ok': False, 'err': str(e)[:80], 'ran': [], 'complete': True})
     t_fast = time.time() - T0
-    if EXTRA:
-        agg, pseudo = run_indeed(structs, recettes)
+    if AGGR:
+        agg, pseudo = run_aggregators(structs, recettes, state['run'])
         for p in pseudo:
             if p['id'] not in byid:
                 structs.append(p); byid[p['id']] = p
@@ -256,12 +258,12 @@ def main():
         if is_hl(cid):
             raw = [x for x in raw if country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or '')]
         live = set()
-        own_titles = {_norm(o['title']) for o in offers.values() if o['company_id'] == cid and o['status'] == 'open' and o.get('via') not in AGG}
+        own_titles = {_norm(o['title']) + '|' + country_of(o.get('location') or '') for o in offers.values() if o['company_id'] == cid and o['status'] == 'open'}
         for x in raw:
             x['title'] = clean(x['title'])
             prev = url_idx.get(x['url'])
             if prev and prev['company_id'] != cid: continue
-            if not prev and x.get('src') in AGG and _norm(x['title']) in own_titles: continue
+            if not prev and x.get('src') in AGG and _norm(x['title']) + '|' + country_of(x.get('location') or '') in own_titles: continue
             oid = prev['id'] if prev else hashlib.sha1((cid + '|' + str(x.get('ext') or x['url'])).encode()).hexdigest()[:14]
             if oid in live: continue
             live.add(oid)
@@ -279,6 +281,7 @@ def main():
             if (x.get('src') or info['via']) in fresh_src and not x.get('posted'): o['initial'] = True
             offers[oid] = o; url_idx[o['url']] = o
             new_ids.append(oid)
+            own_titles.add(_norm(o['title']) + '|' + country_of(o.get('location') or ''))
         ran = set(info['ran'])
         # source douteuse : lecture incomplète (requête en échec), rien lu du tout, ou moins de la moitié des
         # offres déjà connues revues -> page modifiée, blocage, pagination : on ne compte pas d'absence
