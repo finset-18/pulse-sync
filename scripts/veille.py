@@ -36,7 +36,7 @@ GRACE = (NOW - dt.timedelta(hours=36)).isoformat().replace('+00:00', 'Z')
 STALE = (NOW - dt.timedelta(days=6)).isoformat().replace('+00:00', 'Z')  # source douteuse depuis 6 jours : fermée
 FRESH = (NOW - dt.timedelta(hours=3)).isoformat().replace('+00:00', 'Z')  # last_seen réécrit au plus toutes les 3 h (fichier stable entre deux passages)
 SWEEP = (NOW - dt.timedelta(days=8)).isoformat().replace('+00:00', 'Z')  # offres d'agrégateurs ou hors liste non revues depuis 8 jours : fermées
-from sources import AGG, is_hl, merge_annuaire, hors_liste, run_indeed, merge_results
+from sources import AGG, HL_TITLE, is_hl, merge_annuaire, hors_liste, run_indeed, merge_results
 from commun import _norm
 
 
@@ -251,7 +251,7 @@ def main():
         if c.get('fam') in ('corp', 'consulting', 'fintech', '', None):
             raw = [x for x in raw if FIN_TITLE.search(x.get('title') or '')]
         if is_hl(cid):
-            raw = [x for x in raw if country_of(x.get('location') or '')]
+            raw = [x for x in raw if country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or '')]
         live = set()
         own_titles = {_norm(o['title']) for o in offers.values() if o['company_id'] == cid and o['status'] == 'open' and o.get('via') not in AGG}
         for x in raw:

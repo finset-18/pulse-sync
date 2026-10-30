@@ -14,6 +14,10 @@ from commun import load, clean, is_intern, FIN_TITLE, iso, _norm
 
 AGG = ('indeed',)
 FAST = ('ats', 'api', 'html', 'wttj')
+# intitulé de poste financier (plus strict que FIN_TITLE, qui accepte « marketing ») : exigé hors liste
+HL_TITLE = re.compile(r"financ|m&a|merger|fusion|acquisition|private equity|capital[- ]invest|venture|\blbo\b|invest|asset|wealth|patrimoin|"
+                      r"\bfunds?\b|fonds|banking|banque|corporate finance|transaction|valuation|[ée]valuation|credit|cr[ée]dit|equity|debt|dette|"
+                      r"trading|trader|markets\b|march[ée]s|quant|treasury|tr[ée]sorerie|audit|actuar|\brisk|risque|analyst|analyste", re.I)
 LEGAL = re.compile(r"\b(sas|sasu|sa|sarl|sca|snc|ltd|limited|llp|plc|gmbh|ag|inc|llc|lp|nv|bv|se|s\.a\.?|group|groupe|holding|france|uk|europe|international)\b\.?", re.I)
 
 
@@ -138,6 +142,8 @@ def run_indeed(structs, recettes, log=print):
         if cid and cid in fast:
             continue  # structure déjà lue par sa plateforme ou son site : ce serait un doublon
         if not cid:
+            if not HL_TITLE.search(title):
+                continue
             key = _norm(LEGAL.sub(' ', comp)) or _norm(comp)
             if len(key) < 3:
                 continue
