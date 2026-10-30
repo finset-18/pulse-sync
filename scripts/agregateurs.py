@@ -9,7 +9,7 @@ réapparaître (veille.py). Les offres d'une structure déjà lue par sa platefo
 """
 import os, re, time
 from concurrent.futures import ThreadPoolExecutor
-from commun import S, clean, is_intern, FIN_TITLE, iso, _norm, country_of
+from commun import S, clean, is_intern, FIN_TITLE, iso, _norm, country_of, load, save
 from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, is_hl
 
 PER_PASS = int(os.environ.get('AGG_PER_PASS', '30'))
@@ -127,6 +127,35 @@ def run_ft(q):
     return out
 
 
+WD = 'https://www.wikidata.org/w/api.php'
+WD_MAX = int(os.environ.get('WD_MAX', '60'))  # recherches de site par passage
+
+
+def domain_for(name, cache):
+    """Site officiel d'une entreprise d'après Wikidata (propriété P856), pour afficher son logo."""
+    k = _norm(name)
+    if k in cache:
+        return cache[k]
+    site = ''
+    try:
+        h = {'User-Agent': 'pulse-sync/1.0 (logos)'}
+        r = S.get(WD, params={'action': 'wbsearchentities', 'search': name, 'language': 'fr', 'uselang': 'fr', 'type': 'item',
+                              'limit': 3, 'format': 'json'}, headers=h, timeout=10).json()
+        ids = [x['id'] for x in r.get('search', [])]
+        if ids:
+            e = S.get(WD, params={'action': 'wbgetentities', 'ids': '|'.join(ids), 'props': 'claims', 'format': 'json'},
+                      headers=h, timeout=10).json().get('entities', {})
+            for i in ids:
+                cl = (e.get(i, {}).get('claims', {}).get('P856') or [])
+                if cl:
+                    site = str(cl[0].get('mainsnak', {}).get('datavalue', {}).get('value') or '')
+                    break
+    except Exception:
+        return ''
+    cache[k] = site if site.startswith('http') else ''
+    return cache[k]
+
+
 def one(t):
     kind, site, country, loc, q = t
     try:
@@ -202,4 +231,14 @@ def run_aggregators(structs, recettes, run_no, log=print):
             info['ran'].append(src)
             info['partial'].append(src)
         raw.append(x)
+    # sociétés hors liste sans site : on cherche leur site officiel (logo) ; le cache évite de refaire les mêmes recherches
+    cache, n = load('domaines.json') or {}, 0
+    for ps in pseudo.values():
+        if ps['site'] or n >= WD_MAX:
+            continue
+        if _norm(ps['name']) not in cache:
+            n += 1
+        ps['site'] = domain_for(ps['name'], cache)
+    if n:
+        save('domaines.json', cache)
     return results, list(pseudo.values())
