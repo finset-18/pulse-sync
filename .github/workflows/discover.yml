@@ -1,0 +1,111 @@
+name: discover
+
+on:
+  schedule:
+    - cron: "23 1 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "auto, retry or all"
+        type: choice
+        options: [auto, retry, all]
+        default: auto
+      only:
+        description: "Ids to test, comma separated"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discover
+  cancel-in-progress: false
+
+jobs:
+  lot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        env:
+          R: ${{ secrets.DATA_REPO }}
+          T: ${{ secrets.DATA_TOKEN }}
+        run: '[ -n "$R" ] && [ -n "$T" ] || { echo "missing DATA_REPO / DATA_TOKEN secrets"; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-1.48.0
+      - run: pip install -q requests==2.32.3 playwright==1.48.0 && python -m playwright install --with-deps chromium > /dev/null
+      - name: discover
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "4"
+          MODE: ${{ github.event.inputs.mode || 'auto' }}
+          ONLY: ${{ github.event.inputs.only || '' }}
+          BUDGET_MIN: "110"
+          CONC: "6"
+        run: |
+          python scripts/decouverte.py > run.log 2>&1 || { tail -n 5 run.log | cut -c1-200; exit 1; }
+          tail -n 1 run.log | cut -c1-300
+      - name: save part
+        working-directory: store
+        run: |
+          [ -f data/recettes-part-${{ matrix.shard }}.json ] || exit 0
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add data/recettes-part-${{ matrix.shard }}.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "part ${{ matrix.shard }}"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase -X theirs && git push -q && exit 0; sleep $((i * 7)); done
+          exit 1
+
+  merge:
+    needs: lot
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        env:
+          R: ${{ secrets.DATA_REPO }}
+          T: ${{ secrets.DATA_TOKEN }}
+        run: '[ -n "$R" ] && [ -n "$T" ] || { echo "missing DATA_REPO / DATA_TOKEN secrets"; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests==2.32.3
+      - name: merge
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+        run: python scripts/fusion.py > run.log 2>&1 || { tail -n 5 run.log; exit 1; }
+      - name: save
+        working-directory: store
+        run: |
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add -A data/recettes.json data/decouverte.json data/a_revoir.json data/
+          git diff --cached --quiet && exit 0
+          git commit -q -m "discover $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase -X theirs && git push -q && exit 0; sleep $((i * 7)); done
+          exit 1

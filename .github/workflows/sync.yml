@@ -1,0 +1,77 @@
+name: sync
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      render:
+        description: "Force the browser pass"
+        type: boolean
+        default: false
+      extra:
+        description: "Force the extended pass"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        env:
+          R: ${{ secrets.DATA_REPO }}
+          T: ${{ secrets.DATA_TOKEN }}
+        run: '[ -n "$R" ] && [ -n "$T" ] || { echo "missing DATA_REPO / DATA_TOKEN secrets"; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: plan
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+          FORCE_RENDER: ${{ github.event.inputs.render }}
+          FORCE_EXTRA: ${{ github.event.inputs.extra }}
+        run: python scripts/plan.py
+      - run: pip install -q requests==2.32.3
+      - if: steps.plan.outputs.render == '1'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-1.48.0
+      - if: steps.plan.outputs.render == '1'
+        run: pip install -q playwright==1.48.0 && python -m playwright install --with-deps chromium > /dev/null
+      - if: steps.plan.outputs.extra == '1'
+        run: pip install -q python-jobspy || true
+      - name: run
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+          RENDER: ${{ steps.plan.outputs.render }}
+          EXTRA: ${{ steps.plan.outputs.extra }}
+          WORKERS: "48"
+        run: |
+          python scripts/veille.py > run.log 2>&1 || { tail -n 30 run.log; exit 1; }
+          grep -E '"(open|new_this_run|closed_this_run|companies_ok|hors_liste_open|seconds)"|^indeed' run.log || true
+      - name: save
+        working-directory: store
+        run: |
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add data/offers.json data/meta.json data/state.json data/a_revoir.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "sync $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase -X theirs && git push -q && exit 0; sleep $((i * 5)); done
+          exit 1
