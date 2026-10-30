@@ -271,12 +271,14 @@ def main():
                 o = offers[oid]; o['status'] = 'open'; o.pop('closed_at', None); o.pop('miss', None)
                 if (o.get('last_seen') or '') <= FRESH: o['last_seen'] = NOW_ISO
                 if not o.get('site') and site_of(c): o['site'] = site_of(c)
+                if x.get('logo') and not o.get('logo'): o['logo'] = x['logo']
                 if x.get('src'): o['via'] = x['src']
                 continue
             o = {'id': oid, 'company_id': cid, 'company': c['name'], 'fam': c.get('fam', ''), 'site': site_of(c),
                  'title': x['title'][:200], 'url': x['url'], 'location': clean(x.get('location'))[:120], 'posted': x.get('posted'),
                  'first_seen': NOW_ISO, 'last_seen': NOW_ISO, 'status': 'open', 'via': x.get('src') or info['via'], 'deadline': x.get('deadline'),
                  '_desc': x.get('desc') or '', '_commit': x.get('commit') or ''}
+            if x.get('logo'): o['logo'] = x['logo']  # logo de l'entreprise fourni par l'agrégateur
             if x.get('detail') and len(x.get('desc') or '') < 600: o['dk'] = list(x['detail'])
             elif x.get('url') and not x.get('desc') and o['via'] in ('api', 'render', 'html', 'page', 'watch'): o['dk'] = ['page', x['url']]
             if (x.get('src') or info['via']) in fresh_src and not x.get('posted'): o['initial'] = True

@@ -86,6 +86,7 @@ def run_jobspy(site, country, loc, q):
             continue
         out.append({'title': _s(r.get('title')), 'company': _s(r.get('company')), 'url': u, 'location': re.sub(r',\s*[A-Z]{1,2}\d{1,2}\b', '', _s(r.get('location')))[:120],
                     'csite': _s(r.get('company_url_direct')) if _s(r.get('company_url_direct')).startswith('http') else '',
+                    'logo': _s(r.get('company_logo')) if _s(r.get('company_logo')).startswith('https://') else '',
                     'posted': _date(r.get('date_posted')), 'ext': site + ':' + (_s(r.get('id')) or u),
                     'desc': _s(r.get('description'))[:4000], 'commit': _s(r.get('job_type')), 'src': site})
     return out
