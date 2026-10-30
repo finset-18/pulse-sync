@@ -10,7 +10,7 @@ Sources complémentaires du robot de veille.
   sociétés hors liste ; ces offres ne sont fermées qu'après 8 jours sans réapparaître
 """
 import re, json, time, datetime as dt
-from commun import load, clean, is_intern, FIN_TITLE, iso, _norm
+from commun import load, clean, is_intern, FIN_TITLE, iso, _norm, COUNTRIES, country_of
 
 AGG = ('indeed',)
 FAST = ('ats', 'api', 'html', 'wttj')
@@ -37,6 +37,20 @@ def merge_annuaire(recettes, ann):
             r['methods'] = add + cur
             out[cid] = r
     return out
+
+
+def home_countries(c):
+    """Pays d'une structure d'après son nom et sa ville (« Baker Tilly France » -> France)."""
+    t = (c.get('name') or '') + ' ' + (c.get('city') or '')
+    return {n for n, rx in COUNTRIES if rx.search(t)}
+
+
+def country_ok(c, loc):
+    """Une offre lue sur un compte trouvé dans les annuaires (souvent le compte mondial du groupe) :
+    gardée seulement dans le pays de la structure, ou à défaut dans un pays suivi."""
+    cc = country_of(loc or '')
+    home = home_countries(c)
+    return (cc in home) if home else bool(cc)
 
 
 def hors_liste():

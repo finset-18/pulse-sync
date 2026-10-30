@@ -36,7 +36,7 @@ GRACE = (NOW - dt.timedelta(hours=36)).isoformat().replace('+00:00', 'Z')
 STALE = (NOW - dt.timedelta(days=6)).isoformat().replace('+00:00', 'Z')  # source douteuse depuis 6 jours : fermée
 FRESH = (NOW - dt.timedelta(hours=3)).isoformat().replace('+00:00', 'Z')  # last_seen réécrit au plus toutes les 3 h (fichier stable entre deux passages)
 SWEEP = (NOW - dt.timedelta(days=8)).isoformat().replace('+00:00', 'Z')  # offres d'agrégateurs ou hors liste non revues depuis 8 jours : fermées
-from sources import AGG, HL_TITLE, is_hl, merge_annuaire, hors_liste, run_indeed, merge_results
+from sources import AGG, HL_TITLE, country_ok, is_hl, merge_annuaire, hors_liste, run_indeed, merge_results
 from commun import _norm
 
 
@@ -170,7 +170,9 @@ def main():
     seeds_all = {c['id']: c for c in (load('companies.json') or [])}
     if not structs: structs = list(seeds_all.values())
     recettes = load('recettes.json') or {}
-    recettes = merge_annuaire(recettes, load('annuaire.json') or {})
+    ann = load('annuaire.json') or {}
+    ann_keys = {(cid, m.get('k')) for cid, ms in ann.items() for m in ms}
+    recettes = merge_annuaire(recettes, ann)
     if EXTRA:
         hs, hr = hors_liste()
         ids0 = {c['id'] for c in structs}
@@ -250,6 +252,7 @@ def main():
         raw = [x for x in raw if keep_offer(x) and not foreign(c, x['url'])]
         if c.get('fam') in ('corp', 'consulting', 'fintech', '', None):
             raw = [x for x in raw if FIN_TITLE.search(x.get('title') or '')]
+        raw = [x for x in raw if (cid, x.get('src')) not in ann_keys or country_ok(c, x.get('location'))]
         if is_hl(cid):
             raw = [x for x in raw if country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or '')]
         live = set()
