@@ -1,8 +1,11 @@
 name: sync
 
+# Un seul job qui enchaîne un passage toutes les 5 minutes pendant 5 h 30.
+# Le planning GitHub ne garantit pas un départ toutes les 5 min (il les espace souvent de 30 à 60 min) :
+# le cron sert seulement à relancer la boucle quand la précédente se termine.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       render:
@@ -24,7 +27,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - name: check
@@ -40,40 +43,47 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - id: plan
-        env:
-          DATA_DIR: ${{ github.workspace }}/store/data
-          FORCE_RENDER: ${{ github.event.inputs.render }}
-          FORCE_EXTRA: ${{ github.event.inputs.extra }}
-          EXTRA_EVERY_H: "1"
-        run: python scripts/plan.py
-      - run: pip install -q requests==2.32.3
-      - if: steps.plan.outputs.render == '1'
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-1.48.0
-      - if: steps.plan.outputs.render == '1'
-        run: pip install -q playwright==1.48.0 && python -m playwright install --with-deps chromium > /dev/null
-      - run: pip install -q python-jobspy || true
-      - name: run
+      - run: |
+          pip install -q requests==2.32.3 playwright==1.48.0 && python -m playwright install --with-deps chromium > /dev/null
+          pip install -q python-jobspy || true
+      - name: loop
+        working-directory: store
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
-          RENDER: ${{ steps.plan.outputs.render }}
-          EXTRA: ${{ steps.plan.outputs.extra }}
           WORKERS: "48"
+          EXTRA_EVERY_H: "1"
+          LOOP_MIN: "330"
+          EVERY_S: "300"
+          FORCE_RENDER: ${{ github.event.inputs.render }}
+          FORCE_EXTRA: ${{ github.event.inputs.extra }}
           FT_CLIENT_ID: ${{ secrets.FT_CLIENT_ID }}
           FT_CLIENT_SECRET: ${{ secrets.FT_CLIENT_SECRET }}
         run: |
-          python scripts/veille.py > run.log 2>&1 || { tail -n 30 run.log; exit 1; }
-          grep -E '"(open|new_this_run|closed_this_run|companies_ok|hors_liste_open|seconds)"|^agr' run.log || true
-      - name: save
-        working-directory: store
-        run: |
           git config user.name "sync-bot"
           git config user.email "sync-bot@users.noreply.github.com"
-          git add data/offers.json data/meta.json data/state.json data/a_revoir.json
-          git diff --cached --quiet && exit 0
-          git commit -q -m "sync $(date -u +'%Y-%m-%d %H:%M')"
-          for i in 1 2 3 4 5 6; do git pull -q --rebase -X theirs && git push -q && exit 0; sleep $((i * 5)); done
-          exit 1
+          end=$(( $(date +%s) + LOOP_MIN * 60 ))
+          n=0
+          while [ "$(date +%s)" -lt "$end" ]; do
+            t0=$(date +%s); n=$((n + 1))
+            git pull -q --rebase -X theirs || true
+            plan=$(GITHUB_OUTPUT= python ../scripts/plan.py)
+            render=$(echo "$plan" | sed -n 's/^render=//p'); extra=$(echo "$plan" | sed -n 's/^extra=//p')
+            if RENDER=$render EXTRA=$extra python ../scripts/veille.py > ../run.log 2>&1; then
+              echo "passage $n (rendu $render, étendu $extra)"
+              grep -E '"(open|new_this_run|closed_this_run|hors_liste_open|seconds)"|^agr' ../run.log || true
+            else
+              echo "passage $n en échec"; tail -n 15 ../run.log
+            fi
+            export FORCE_RENDER=false FORCE_EXTRA=false
+            git add data/offers.json data/meta.json data/state.json data/a_revoir.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "sync $(date -u +'%Y-%m-%d %H:%M')"
+              for i in 1 2 3 4 5 6; do git pull -q --rebase -X theirs && git push -q && break; sleep $((i * 5)); done
+            fi
+            left=$(( EVERY_S - ($(date +%s) - t0) ))
+            [ "$left" -gt 0 ] && sleep "$left"
+          done
