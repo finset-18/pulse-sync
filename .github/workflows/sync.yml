@@ -45,6 +45,7 @@ jobs:
           DATA_DIR: ${{ github.workspace }}/store/data
           FORCE_RENDER: ${{ github.event.inputs.render }}
           FORCE_EXTRA: ${{ github.event.inputs.extra }}
+          EXTRA_EVERY_H: "1"
         run: python scripts/plan.py
       - run: pip install -q requests==2.32.3
       - if: steps.plan.outputs.render == '1'
@@ -54,17 +55,18 @@ jobs:
           key: playwright-1.48.0
       - if: steps.plan.outputs.render == '1'
         run: pip install -q playwright==1.48.0 && python -m playwright install --with-deps chromium > /dev/null
-      - if: steps.plan.outputs.extra == '1'
-        run: pip install -q python-jobspy || true
+      - run: pip install -q python-jobspy || true
       - name: run
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           RENDER: ${{ steps.plan.outputs.render }}
           EXTRA: ${{ steps.plan.outputs.extra }}
           WORKERS: "48"
+          FT_CLIENT_ID: ${{ secrets.FT_CLIENT_ID }}
+          FT_CLIENT_SECRET: ${{ secrets.FT_CLIENT_SECRET }}
         run: |
           python scripts/veille.py > run.log 2>&1 || { tail -n 30 run.log; exit 1; }
-          grep -E '"(open|new_this_run|closed_this_run|companies_ok|hors_liste_open|seconds)"|^indeed' run.log || true
+          grep -E '"(open|new_this_run|closed_this_run|companies_ok|hors_liste_open|seconds)"|^agr' run.log || true
       - name: save
         working-directory: store
         run: |
