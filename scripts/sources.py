@@ -10,7 +10,7 @@ Sources complémentaires du robot de veille.
   sociétés hors liste ; ces offres ne sont fermées qu'après 8 jours sans réapparaître
 """
 import re, json, time, datetime as dt
-from commun import load, clean, is_intern, FIN_TITLE, iso, _norm, COUNTRIES, country_of
+from commun import load, clean, is_intern, FIN_TITLE, iso, _norm, COUNTRIES, country_of, BAD_SLUG
 
 PLUS = ('trackr', 'efc', 'wttj_search', 'talnet', 'janestreet', 'simplify', 'muse', 'arbeitnow')
 AGG = ('indeed', 'glassdoor', 'google', 'francetravail') + PLUS
@@ -33,7 +33,7 @@ def merge_annuaire(recettes, ann):
         r = dict(out.get(cid) or {'id': cid, 'methods': []})
         cur = list(r.get('methods') or [])
         kinds = {m.get('k') for m in cur if m.get('m') == 'ats'}
-        add = [m for m in meths if m.get('m') == 'ats' and m.get('k') not in kinds]
+        add = [m for m in meths if m.get('m') == 'ats' and m.get('k') not in kinds and str(m.get('v')).lower() not in BAD_SLUG]  # « jobs » : compte d'une autre société
         if add:
             r['methods'] = add + cur
             out[cid] = r
