@@ -10,9 +10,11 @@ réapparaître (veille.py). Les offres d'une structure déjà lue par sa platefo
 import os, re, time
 from concurrent.futures import ThreadPoolExecutor
 from commun import S, clean, is_intern, FIN_TITLE, iso, _norm, country_of, load, save
-from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, is_hl
+from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, AGG, is_hl
 
 PER_PASS = int(os.environ.get('AGG_PER_PASS', '30'))
+# Google et Glassdoor ne renvoient rien depuis les serveurs GitHub (Glassdoor répond 403) : leurs tours sont laissés à Indeed
+JS_SITES = set(os.environ.get('AGG_SITES', 'indeed').split(','))
 HOURS = int(os.environ.get('AGG_HOURS', str(24 * 21)))
 
 FR = ['stage M&A', 'stage fusions acquisitions', 'stage private equity', 'stage capital investissement', 'stage venture capital',
@@ -42,6 +44,14 @@ ZONES = [
     ('spain', 'Madrid', EN[:8], ('indeed', 'google')),
     ('italy', 'Milan', EN[:8], ('indeed', 'google')),
     ('ireland', 'Dublin', EN[:8], ('indeed', 'google')),
+    ('france', 'Lille', FR[:10], ('indeed',)),
+    ('france', 'Bordeaux', FR[:6], ('indeed',)),
+    ('france', 'Nantes', FR[:6], ('indeed',)),
+    ('france', 'Marseille', FR[:6], ('indeed',)),
+    ('france', 'France', FR, ('indeed',)),
+    ('hong kong', 'Hong Kong', EN[:10], ('indeed',)),
+    ('singapore', 'Singapore', EN[:10], ('indeed',)),
+    ('united arab emirates', 'Dubai', EN[:8], ('indeed',)),
 ]
 FT_Q = ['stage finance', 'stage analyste financier', 'stage fusions acquisitions', 'stage private equity', 'stage banque',
         'stage gestion actifs', 'stage audit financier', 'stage investissement', 'stage marchés financiers', 'stage crédit']
@@ -50,7 +60,8 @@ def tasks():
     for country, loc, qs, sites in ZONES:
         for q in qs:
             for s in sites:
-                out.append(('js', s, country, loc, q))
+                if s in JS_SITES:
+                    out.append(('js', s, country, loc, q))
     if os.environ.get('FT_CLIENT_ID') and os.environ.get('FT_CLIENT_SECRET'):
         out += [('ft', 'francetravail', '', '', q) for q in FT_Q]
     # sites mélangés pour qu'une tranche ne frappe pas un seul site d'affilée
@@ -201,18 +212,34 @@ def run_aggregators(structs, recettes, run_no, log=print):
     log('agrégateurs : tranche ' + str(run_no % n_slices + 1) + '/' + str(n_slices) + ' : ' +
         ', '.join(f'{k} {v[0]} ok / {v[1]} échecs / {v[2]} annonces' for k, v in sorted(stats.items())))
 
+    if os.environ.get('EXTRA') == '1':
+        try:
+            from plus import plus_rows
+            for x in plus_rows(log):
+                if x['url'] not in seen:
+                    seen.add(x['url'])
+                    rows.append(x)
+        except Exception as e:
+            log('agr+ : ' + str(e)[:120])
+
     idx = name_index(structs)
     fast = {cid for cid, r in recettes.items() if any(m.get('m') in FAST for m in (r.get('methods') or []))}
+    # structures dont la plateforme donne vraiment des offres : les annonces d'agrégateurs seraient des doublons.
+    # Les autres (page lue mais 0 offre, comme Goldman Sachs) gardent les offres trouvées par les agrégateurs.
+    offs = (load('offers.json') or {}).get('offers') or []
+    served = {o['company_id'] for o in offs if o.get('status') == 'open' and o.get('via') not in AGG
+              and o.get('via') not in ('html', 'watch', 'page', 'render', 'api')}
     results, pseudo, dedup = {}, {}, set()
     for x in rows:
         title, comp, csite = x['title'], x.pop('company', ''), x.pop('csite', '')
-        if not title or not comp or not is_intern(title) or not FIN_TITLE.search(title + ' ' + comp):
+        trust = x.get('trust')  # source 100 % finance : l'intitulé n'a pas à contenir un mot-clé financier
+        if not title or not comp or not (trust or is_intern(title) or x.get('commit')) or not (trust or FIN_TITLE.search(title + ' ' + comp)):
             continue
         cid = match_name(comp, idx)
-        if cid and cid in fast:
+        if cid and cid in fast and cid in served:
             continue  # structure déjà lue par sa plateforme ou son site : ce serait un doublon
         if not cid:
-            if not HL_TITLE.search(title):
+            if not trust and not HL_TITLE.search(title):
                 continue
             key = _norm(LEGAL.sub(' ', comp)) or _norm(comp)
             if len(key) < 3:
