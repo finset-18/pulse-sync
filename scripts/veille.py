@@ -37,7 +37,7 @@ GRACE = (NOW - dt.timedelta(hours=36)).isoformat().replace('+00:00', 'Z')
 STALE = (NOW - dt.timedelta(days=6)).isoformat().replace('+00:00', 'Z')  # source douteuse depuis 6 jours : fermée
 FRESH = (NOW - dt.timedelta(hours=3)).isoformat().replace('+00:00', 'Z')  # last_seen réécrit au plus toutes les 3 h (fichier stable entre deux passages)
 SWEEP = (NOW - dt.timedelta(days=8)).isoformat().replace('+00:00', 'Z')  # offres d'agrégateurs ou hors liste non revues depuis 8 jours : fermées
-from sources import AGG, HL_TITLE, country_ok, is_hl, merge_annuaire, hors_liste, merge_results
+from sources import AGG, PLUS, HL_TITLE, country_ok, is_hl, merge_annuaire, hors_liste, merge_results
 from agregateurs import run_aggregators
 from commun import _norm
 
@@ -251,12 +251,12 @@ def main():
         fresh_src = {s for s in info['ran'] if cid + '|' + s not in known}
         known.update(cid + '|' + s for s in info['ran'])
         raw_by_src = Counter(x.get('src') for x in raw)
-        raw = [x for x in raw if keep_offer(x) and not foreign(c, x['url'])]
+        raw = [x for x in raw if keep_offer(x) and (x.get('trust') or not foreign(c, x['url']))]
         if c.get('fam') in ('corp', 'consulting', 'fintech', '', None):
-            raw = [x for x in raw if FIN_TITLE.search(x.get('title') or '')]
+            raw = [x for x in raw if x.get('trust') or FIN_TITLE.search(x.get('title') or '') or (c.get('fam') == 'consulting' and re.search(r'consult', x.get('title') or '', re.I))]
         raw = [x for x in raw if (cid, x.get('src')) not in ann_keys or country_ok(c, x.get('location'))]
         if is_hl(cid):
-            raw = [x for x in raw if country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or '')]
+            raw = [x for x in raw if x.get('trust') or (country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or ''))]
         live = set()
         own_titles = {_norm(o['title']) + '|' + country_of(o.get('location') or '') for o in offers.values() if o['company_id'] == cid and o['status'] == 'open'}
         for x in raw:
@@ -272,16 +272,17 @@ def main():
                 if (o.get('last_seen') or '') <= FRESH: o['last_seen'] = NOW_ISO
                 if not o.get('site') and site_of(c): o['site'] = site_of(c)
                 if x.get('logo') and not o.get('logo'): o['logo'] = x['logo']
-                if x.get('src'): o['via'] = x['src']
+                if x.get('src') and (x['src'] not in PLUS or o.get('via') in AGG): o['via'] = x['src']
                 continue
             o = {'id': oid, 'company_id': cid, 'company': c['name'], 'fam': c.get('fam', ''), 'site': site_of(c),
                  'title': x['title'][:200], 'url': x['url'], 'location': clean(x.get('location'))[:120], 'posted': x.get('posted'),
                  'first_seen': NOW_ISO, 'last_seen': NOW_ISO, 'status': 'open', 'via': x.get('src') or info['via'], 'deadline': x.get('deadline'),
                  '_desc': x.get('desc') or '', '_commit': x.get('commit') or ''}
             if x.get('logo'): o['logo'] = x['logo']  # logo de l'entreprise fourni par l'agrégateur
+            if x.get('trust'): o['trust'] = 1  # source 100 % finance : jamais écartée pour son intitulé
             if x.get('detail') and len(x.get('desc') or '') < 600: o['dk'] = list(x['detail'])
             elif x.get('url') and not x.get('desc') and o['via'] in ('api', 'render', 'html', 'page', 'watch'): o['dk'] = ['page', x['url']]
-            if (x.get('src') or info['via']) in fresh_src and not x.get('posted'): o['initial'] = True
+            if (x.get('src') or info['via']) in fresh_src and (not x.get('posted') or x.get('src') in PLUS): o['initial'] = True
             offers[oid] = o; url_idx[o['url']] = o
             new_ids.append(oid)
             own_titles.add(_norm(o['title']) + '|' + country_of(o.get('location') or ''))
@@ -308,7 +309,7 @@ def main():
 
     for o in offers.values():
         if o['status'] == 'open' and ((o.get('via') in AGG or is_hl(o['company_id'])) and (o.get('last_seen') or '') <= SWEEP
-                                    or is_hl(o['company_id']) and not HL_TITLE.search(o.get('title') or '')):
+                                    or is_hl(o['company_id']) and not o.get('trust') and not HL_TITLE.search(o.get('title') or '')):
             o['status'] = 'closed'; o['closed_at'] = NOW_ISO; closed_now += 1
 
     # rattrapage : les offres ouvertes sans durée sont relues une fois en entier (description complète)
