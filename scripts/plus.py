@@ -7,9 +7,8 @@ n'est donc fermée qu'après 8 jours sans réapparaître et une source en panne 
 
 - trackr : programmes finance UK et US (api.the-trackr.com)
 - efc : eFinancialCareers
-- wttj : recherche Welcome to the Jungle
+- wttj_search : recherche Welcome to the Jungle
 - talnet : plateformes Oleeo / tal.net (Morgan Stanley, BlackRock)
-- bofa : Bank of America
 - janestreet : Jane Street
 - simplify : liste publique SimplifyJobs sur GitHub
 - muse, arbeitnow : API publiques
@@ -34,7 +33,9 @@ CITY = re.compile(r"\b(paris|london|londres|frankfurt|francfort|munich|luxembour
                   r"new york|hong kong|singapore|singapour|dubai|edinburgh|manchester|birmingham|glasgow|leeds|bristol)\b", re.I)
 EFC = 'https://job-search-api.efinancialcareers.com/v1/efc/jobs/search'
 EFC_C = ('FR', 'GB', 'LU', 'CH', 'BE', 'DE', 'NL', 'IE', 'ES', 'IT', 'US', 'HK', 'SG', 'AE')
-EFC_Q = ('intern', 'internship', 'stage', 'off-cycle', 'summer analyst', 'graduate')
+EFC_Q = ('intern', 'stage', 'off-cycle', 'summer analyst', 'graduate')
+# eFinancialCareers publie aussi des postes hors métiers de la finance chez ses clients
+EFC_NO = re.compile(r"communication|marketing|\bhr\b|human resources|ressources humaines|recruit|talent|legal|juridique|software|developer|d[ée]veloppeur|\bit\b|cyber|design|event|[ée]v[ée]nementiel", re.I)
 EFC_PAGES = int(os.environ.get('EFC_PAGES', '3'))
 ALGOLIA = ('https://csekhvms53-dsn.algolia.net/1/indexes/wttj_jobs_production_fr/query'
            '?x-algolia-application-id=CSEKHVMS53&x-algolia-api-key=4bd8f6215d0cc52b26430765769e65a0')
@@ -43,7 +44,6 @@ WTTJ_Q = ('finance', 'M&A', 'fusions acquisitions', 'private equity', 'capital i
           'investissement', 'asset management', 'gestion de portefeuille', 'gestion de patrimoine', 'marchés financiers', 'trading', 'corporate finance',
           'transaction services', 'analyste financier', 'audit financier', 'trésorerie', 'crédit', 'risques', 'dette', 'financement', 'immobilier investissement')
 TAL = (('morganstanley', 1, 'Morgan Stanley'), ('morganstanley', 2, 'Morgan Stanley'), ('blackrock', 1, 'BlackRock'))
-BOFA = 'https://careers.bankofamerica.com/services/jobssearchservlet'
 JS_CITY = {'NYC': 'New York, United States', 'LDN': 'London, United Kingdom', 'HKG': 'Hong Kong', 'SGP': 'Singapore', 'ATX': 'Austin, United States',
            'CHI': 'Chicago, United States', 'AMS': 'Amsterdam, Netherlands'}
 SIMPLIFY = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json'
@@ -101,7 +101,7 @@ def efc_one(a):
     for j in js.get('data') or []:
         u, t = j.get('detailsPageUrl') or '', j.get('title') or ''
         text = t + ' ' + (j.get('summary') or '')[:300]
-        if not u or not (is_intern(t) or re.search(r'contract type:? *internship|\bstage de\b|\bstagiaire\b', text, re.I)):
+        if not u or EFC_NO.search(t) or not (is_intern(t) or re.search(r'contract type:? *internship|\bstage de\b|\bstagiaire\b', text, re.I)):
             continue
         res.append(row('efc', j.get('companyName') or j.get('clientBrandName'), t, 'https://www.efinancialcareers.com' + u,
                        (j.get('jobLocation') or {}).get('displayName'), iso(j.get('postedDate')), j.get('id'), j.get('summary'), trust=True))
@@ -140,7 +140,7 @@ def wttj_one(q):
                 continue
             off = (h.get('offices') or [{}])[0] or {}
             ct = h.get('contract_type') or ''
-            res.append(row('wttj', org.get('name'), h.get('name'), f"https://www.welcometothejungle.com/fr/companies/{org['slug']}/jobs/{h['slug']}",
+            res.append(row('wttj_search', org.get('name'), h.get('name'), f"https://www.welcometothejungle.com/fr/companies/{org['slug']}/jobs/{h['slug']}",
                            ', '.join(x for x in (off.get('city'), off.get('country')) if x), iso(h.get('published_at')), h.get('slug'), h.get('summary'),
                            'Alternance' if ct == 'apprenticeship' else 'VIE' if ct == 'vie' else INTERN))
         if page + 1 >= (js.get('nbPages') or 0):
@@ -201,23 +201,6 @@ def s_talnet():
     return out
 
 
-def s_bofa():
-    out = []
-    for kw in ('intern', 'internship', 'analyst program', 'summer analyst'):
-        for start in range(0, 600, 100):
-            r = S.get(BOFA, params={'start': start, 'rows': 100, 'search': 'getAllJobs', 'keywords': kw}, timeout=T)
-            r.raise_for_status()
-            lst = r.json().get('jobsList') or []
-            for j in lst:
-                t, u = j.get('postingTitle') or '', j.get('jcrURL') or ''
-                if u and is_intern(t):
-                    u = u if u.startswith('http') else 'https://careers.bankofamerica.com' + u
-                    out.append(row('bofa', 'Bank of America', t, u, j.get('location') or j.get('city'), None, u, trust=True))
-            if len(lst) < 100:
-                break
-    return out
-
-
 def s_janestreet():
     out = []
     for j in S.get('https://www.janestreet.com/jobs/main.json', timeout=T).json():
@@ -272,7 +255,7 @@ def s_arbeitnow():
     return out
 
 
-SOURCES = {'trackr': s_trackr, 'efc': s_efc, 'wttj': s_wttj, 'talnet': s_talnet, 'bofa': s_bofa, 'janestreet': s_janestreet,
+SOURCES = {'trackr': s_trackr, 'efc': s_efc, 'wttj': s_wttj, 'talnet': s_talnet, 'janestreet': s_janestreet,
            'simplify': s_simplify, 'muse': s_muse, 'arbeitnow': s_arbeitnow}
 
 
