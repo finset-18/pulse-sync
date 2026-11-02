@@ -50,9 +50,10 @@ SIMPLIFY = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internship
 MUSE = 'https://www.themuse.com/api/public/jobs'
 
 
-def row(src, company, title, url, location='', posted=None, ext=None, desc='', commit=INTERN, trust=False):
-    return {'title': clean(title or ''), 'company': clean(company or ''), 'csite': '', 'url': url, 'location': clean(location or '')[:120], 'posted': posted,
-            'ext': src + ':' + str(ext or url), 'desc': clean(desc or '')[:4000], 'commit': commit, 'src': src, 'trust': trust}
+def row(src, company, title, url, location='', posted=None, ext=None, desc='', commit=INTERN, trust=False, logo='', csite='', start=None):
+    return {'title': clean(title or ''), 'company': clean(company or ''), 'csite': csite if str(csite).startswith('http') else '', 'url': url, 'location': clean(location or '')[:120], 'posted': posted,
+            'ext': src + ':' + str(ext or url), 'desc': clean(desc or '')[:8000], 'commit': commit, 'src': src, 'trust': trust,
+            'logo': logo if str(logo).startswith('https://') else '', 'start': start}
 
 
 def trackr_location(p):
@@ -88,7 +89,9 @@ def s_trackr():
                 continue
             co = p.get('company')
             name = (co.get('name') if isinstance(co, dict) else co) or str(p.get('companyId') or '').replace('-', ' ').title()
-            out.append(row('trackr', name, p.get('name'), u, trackr_location(p), iso(p.get('openingDate')), p.get('id'), trust=True))
+            info = co if isinstance(co, dict) else {}
+            out.append(row('trackr', name, p.get('name'), u, trackr_location(p), iso(p.get('openingDate')), p.get('id'), trust=True,
+                           logo=info.get('logo') or info.get('logoUrl') or info.get('imageUrl') or '', csite=info.get('website') or info.get('url') or ''))
     return out
 
 
@@ -104,7 +107,8 @@ def efc_one(a):
         if not u or EFC_NO.search(t) or not (is_intern(t) or re.search(r'contract type:? *internship|\bstage de\b|\bstagiaire\b', text, re.I)):
             continue
         res.append(row('efc', j.get('companyName') or j.get('clientBrandName'), t, 'https://www.efinancialcareers.com' + u,
-                       (j.get('jobLocation') or {}).get('displayName'), iso(j.get('postedDate')), j.get('id'), j.get('summary'), trust=True))
+                       (j.get('jobLocation') or {}).get('displayName'), iso(j.get('postedDate')), j.get('id'), j.get('description') or j.get('summary'), trust=True,
+                       logo=j.get('companyLogoUrl') or j.get('jobAdvertLogoUrl') or ''))
     return res
 
 
@@ -140,9 +144,15 @@ def wttj_one(q):
                 continue
             off = (h.get('offices') or [{}])[0] or {}
             ct = h.get('contract_type') or ''
+            logo = org.get('logo') or {}
+            logo = (logo.get('url') if isinstance(logo, dict) else logo) or ''
+            months = h.get('contract_duration_maximum') or h.get('contract_duration_minimum')
+            text = ' '.join(str(x) for x in (h.get('summary'), h.get('key_missions'), h.get('profile')) if x) + (f' Durée {months} mois.' if months else '')
+            start = str(h.get('start_date') or h.get('starts_at') or '')[:7]
             res.append(row('wttj_search', org.get('name'), h.get('name'), f"https://www.welcometothejungle.com/fr/companies/{org['slug']}/jobs/{h['slug']}",
-                           ', '.join(x for x in (off.get('city'), off.get('country')) if x), iso(h.get('published_at')), h.get('slug'), h.get('summary'),
-                           'Alternance' if ct == 'apprenticeship' else 'VIE' if ct == 'vie' else INTERN))
+                           ', '.join(x for x in (off.get('city'), off.get('country')) if x), iso(h.get('published_at')), h.get('slug'), text,
+                           'Alternance' if ct == 'apprenticeship' else 'VIE' if ct == 'vie' else INTERN, logo=logo,
+                           csite=org.get('website') or org.get('website_url') or '', start=start if re.match(r'20\d\d-\d\d$', start) else None))
         if page + 1 >= (js.get('nbPages') or 0):
             break
     return res
@@ -227,7 +237,7 @@ def s_simplify():
         locs = [str(x) for x in j.get('locations') or []]
         loc = next((x for x in locs if country_of(x)), locs[0] if locs else '')
         out.append(row('simplify', j.get('company_name'), j.get('title'), j['url'], loc, iso(j.get('date_posted')), j.get('id'),
-                       trust=str(j.get('category')) in ('Quant', 'Quantitative Finance')))
+                       trust=str(j.get('category')) in ('Quant', 'Quantitative Finance'), csite=j.get('company_url') or ''))
     return out
 
 
