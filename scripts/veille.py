@@ -63,6 +63,33 @@ def reread_key(o, v):
         return None
     return None
 
+def reread_url(o):
+    """Fiche complète d'après l'adresse de l'offre, quand elle pointe vers une plateforme à API (liens de Trackr, SimplifyJobs...)."""
+    u = o.get('url') or ''
+    last = u.split('?')[0].rstrip('/').rsplit('/', 1)[-1]
+    ats = detect_ats(u)
+    try:
+        if 'workday' in ats and '/job/' in u:
+            host, tenant, site = ats['workday']
+            path = urlparse(u).path
+            return ['workday', f'https://{host}/wday/cxs/{tenant}/{site}{path[path.find("/job/"):]}']
+        m = re.search(r'/job/(\d+)', u)
+        if 'oracle' in ats and m:
+            host, site = ats['oracle']
+            return ['oracle', f'{host}|{site}|{m.group(1)}']
+        m = re.search(r'gh_jid=(\d+)|/jobs/(\d+)', u)
+        if 'greenhouse' in ats and m:
+            return ['gh', f"https://boards-api.greenhouse.io/v1/boards/{ats['greenhouse']}/jobs/{m.group(1) or m.group(2)}"]
+        if 'lever' in ats and re.fullmatch(r'[0-9a-f-]{36}', last):
+            eu = 'eu.' if ats['lever'][1] else ''
+            return ['lever', f"https://api.{eu}lever.co/v0/postings/{ats['lever'][0]}/{last}"]
+        if 'smartrecruiters' in ats and re.fullmatch(r'\d{6,}.*', last):
+            return ['sr', f"https://api.smartrecruiters.com/v1/companies/{ats['smartrecruiters']}/postings/{last.split('-')[0]}"]
+    except Exception:
+        return None
+    return None
+
+
 def m_key(m):
     return m['m'] if m['m'] != 'ats' else m['k']
 
@@ -272,6 +299,9 @@ def main():
                 if (o.get('last_seen') or '') <= FRESH: o['last_seen'] = NOW_ISO
                 if not o.get('site') and site_of(c): o['site'] = site_of(c)
                 if x.get('logo') and not o.get('logo'): o['logo'] = x['logo']
+                if x.get('start') and not o.get('start'): o['start'] = x['start']
+                if x.get('src') in PLUS and x.get('desc') and not o.get('txt2') and not (o.get('months') and o.get('start')):
+                    o['_desc'] = x['desc']; o['txt2'] = 1  # texte complet reçu une fois pour retrouver durée et début
                 if x.get('src') and (x['src'] not in PLUS or o.get('via') in AGG): o['via'] = x['src']
                 continue
             o = {'id': oid, 'company_id': cid, 'company': c['name'], 'fam': c.get('fam', ''), 'site': site_of(c),
@@ -279,6 +309,7 @@ def main():
                  'first_seen': NOW_ISO, 'last_seen': NOW_ISO, 'status': 'open', 'via': x.get('src') or info['via'], 'deadline': x.get('deadline'),
                  '_desc': x.get('desc') or '', '_commit': x.get('commit') or ''}
             if x.get('logo'): o['logo'] = x['logo']  # logo de l'entreprise fourni par l'agrégateur
+            if x.get('start'): o['start'] = x['start']
             if x.get('trust'): o['trust'] = 1  # source 100 % finance : jamais écartée pour son intitulé
             if x.get('detail') and len(x.get('desc') or '') < 600: o['dk'] = list(x['detail'])
             elif x.get('url') and not x.get('desc') and o['via'] in ('api', 'render', 'html', 'page', 'watch'): o['dk'] = ['page', x['url']]
@@ -323,6 +354,13 @@ def main():
         k = reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
         if k: o['dk'] = k
         o['reread'] = 1
+
+    # deuxième rattrapage : toute offre ouverte sans durée ou sans début est relue une fois, avec la plateforme déduite de son adresse
+    for o in offers.values():
+        if o['status'] != 'open' or (o.get('months') and o.get('start')) or o.get('dk') or o.get('reread2') or o.get('via') == 'efc': continue
+        k = reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
+        if k: o['dk'] = k
+        o['reread2'] = 1
 
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
     new_set = set(new_ids)
