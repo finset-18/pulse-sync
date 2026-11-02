@@ -186,7 +186,7 @@ def tal_parse(html, base):
     return res, pages
 
 
-def tal_board(client, board, company):
+def tal_board(client, board, company, trust=True):
     from urllib.parse import urljoin
     url, out, done = f'https://{client}.tal.net/candidate/jobboard/vacancy/{board}/adv/', [], set()
     for _ in range(40):
@@ -196,7 +196,7 @@ def tal_board(client, board, company):
         for oid, title, loc, href in got:
             if oid not in done:
                 done.add(oid)
-                out.append(row('talnet', company, title, urljoin(r.url, href).split('?')[0], loc, None, client + ':' + oid, commit='', trust=True))
+                out.append(row('talnet', company, title, urljoin(r.url, href).split('?')[0], loc, None, client + ':' + oid, commit='', trust=trust))
         nxt = sorted(s for s in pages if s > (len(done) - len(got)))
         if not got or not nxt:
             break
@@ -213,7 +213,7 @@ def s_talnet():
     out = []
     for client, board, company in boards:
         try:
-            out += tal_board(client, board, company)
+            out += tal_board(client, board, company, any(b[0] == client for b in TAL))  # comptes récoltés : intitulé financier exigé
         except Exception:
             pass
     return out
