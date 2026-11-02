@@ -139,7 +139,7 @@ def run_ft(q):
 
 
 WD = 'https://www.wikidata.org/w/api.php'
-WD_MAX = int(os.environ.get('WD_MAX', '60'))  # recherches de site par passage
+WD_MAX = int(os.environ.get('WD_MAX', '250'))  # recherches de site par passage
 
 
 def domain_for(name, cache):
