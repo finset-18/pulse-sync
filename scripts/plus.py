@@ -18,7 +18,7 @@ Lancé seul (python scripts/plus.py), le script affiche ce que chaque source ren
 import datetime as dt, os, re, sys, time
 from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from commun import S, clean, is_intern, iso, country_of
+from commun import S, clean, is_intern, iso, country_of, load
 
 WORKERS = int(os.environ.get('PLUS_WORKERS', '8'))
 BUDGET = int(os.environ.get('PLUS_BUDGET_S', '420'))  # temps maximum d'une source, en secondes
@@ -195,9 +195,17 @@ def tal_board(client, board, company):
 
 
 def s_talnet():
+    """Comptes tal.net connus, plus ceux récoltés chaque semaine par comptes.py. Un compte protégé renvoie 0 offre."""
+    boards = list(TAL)
+    for client, name in ((load('comptes.json') or {}).get('tal') or {}).items():
+        if not any(b[0] == client for b in TAL):
+            boards += [(client, n, name) for n in (1, 2)]
     out = []
-    for client, board, company in TAL:
-        out += tal_board(client, board, company)
+    for client, board, company in boards:
+        try:
+            out += tal_board(client, board, company)
+        except Exception:
+            pass
     return out
 
 
