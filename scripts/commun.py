@@ -193,7 +193,9 @@ def find_date(t):
 
 def _start_of(text, loose=True):
     t = (text or '').lower()
-    kw = r'(?:d[ée]but|start(?:ing)?(?: date)?|starting|commen\w+|à partir d[eu]|from|beginning|disponibilit[ée])'
+    m = re.search(r'\b(' + MONTH_RE + r')\.?\s*(?:to|à|au|-|–|/)\s*(?:' + MONTH_RE + r')\.?\s*(20\d{2})', t)  # « juillet à décembre 2027 » : le début, pas la fin
+    if m: return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
+    kw = r'(?:d[ée]but|start(?:ing|s)?(?: date)?|starting|commen\w+|à partir d[eu]|from|beginning|disponibilit[ée]|à pourvoir|pourvoir|prise de poste|intake)'
     m = re.search(kw + r'[^.\n]{0,40}?(' + MONTH_RE + r')\.?\s*(20\d{2})', t)
     if m: return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
     m = re.search(kw + r'[^.\n]{0,40}?(\d{1,2})/(20\d{2})', t)
@@ -953,6 +955,14 @@ def detail_text(kind, url):
     if kind == 'sr':
         js = get(url).json(); sec = (js.get('jobAd') or {}).get('sections') or {}
         return clean(' '.join((v or {}).get('text', '') for v in sec.values())), None, '', None
+    if kind == 'gh':
+        import html as _html
+        js = get(url).json()
+        return clean(_html.unescape(js.get('content') or '')), None, (js.get('location') or {}).get('name') or '', None
+    if kind == 'lever':
+        js = get(url).json()
+        parts = [js.get('descriptionPlain') or ''] + [clean(x.get('content') or '') for x in js.get('lists') or []] + [js.get('additionalPlain') or '']
+        return clean(' '.join(parts)), None, (js.get('categories') or {}).get('location') or '', None
     r = get(url); h = r.text
     lds = jsonld_jobs(h, url)
     if lds:
