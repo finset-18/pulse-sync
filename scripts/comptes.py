@@ -74,7 +74,7 @@ def slugs(c):
     """Adresses probables d'une structure : son nom, puis le nom de domaine de son site."""
     out, host = [], host_of(site_of(c) or c.get('url') or '').split('.')[0]
     for s in sorted(name_keys(c.get('name')), key=len, reverse=True)[:2] + [_norm(host), re.sub(r'[^a-z0-9]+', '-', (c.get('name') or '').lower()).strip('-')]:
-        if len(s) >= 4 and s not in out:
+        if len(s) >= 4 and s not in out and s not in BAD_SLUG:
             out.append(s)
     return out[:3]
 
