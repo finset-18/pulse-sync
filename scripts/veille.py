@@ -30,7 +30,7 @@ RENDER_CONC = int(os.environ.get('RENDER_CONC', '6'))
 T0 = time.time()
 FAST = ('ats', 'api', 'html', 'wttj')
 # Corporate VC : la plateforme de recrutement est celle de tout le groupe (ex. Sopra Steria), pas celle du fonds
-CVC_HORS = re.compile(r"d[ée]velopp|ing[ée]nieur|engineer|software|logiciel|cyber|thermo", re.I)
+CVC_HORS = re.compile(r"d[ée]velopp|ing[ée]nieur|engineer|software|logiciel|cyber|thermo|quantifi|quantique|pr[ée]-?th[èe]se|\br&d\b|spatial", re.I)
 
 
 def cvc_ok(title):
