@@ -29,6 +29,13 @@ FAIL_N = int(os.environ.get('FAIL_N', '36'))  # échecs de suite avant « à rev
 RENDER_CONC = int(os.environ.get('RENDER_CONC', '6'))
 T0 = time.time()
 FAST = ('ats', 'api', 'html', 'wttj')
+# Corporate VC : la plateforme de recrutement est celle de tout le groupe (ex. Sopra Steria), pas celle du fonds
+CVC_HORS = re.compile(r"d[ée]velopp|ing[ée]nieur|engineer|software|logiciel|cyber|thermo", re.I)
+
+
+def cvc_ok(title):
+    t = title or ''
+    return bool(HL_TITLE.search(t)) and not CVC_HORS.search(t)
 # fermeture d'une offre : absente MISS_CLOSE passages de suite ET pas revue depuis 36 h
 # (avant : 2 absences = fermée en 4 h, ce qui fermait à tort les offres des pages qui changent d'ordre
 # ou des plateformes qui coupent la lecture en route)
@@ -281,6 +288,8 @@ def main():
         raw = [x for x in raw if keep_offer(x) and (x.get('trust') or not foreign(c, x['url']))]
         if c.get('fam') in ('corp', 'consulting', 'fintech', '', None):
             raw = [x for x in raw if x.get('trust') or FIN_TITLE.search(x.get('title') or '') or (c.get('fam') == 'consulting' and re.search(r'consult', x.get('title') or '', re.I))]
+        if c.get('sub') == 'Corporate VC':
+            raw = [x for x in raw if x.get('trust') or cvc_ok(x.get('title'))]
         raw = [x for x in raw if (cid, x.get('src')) not in ann_keys or country_ok(c, x.get('location'))]
         if is_hl(cid):
             raw = [x for x in raw if x.get('trust') or (country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or ''))]
@@ -340,7 +349,8 @@ def main():
 
     for o in offers.values():
         if o['status'] == 'open' and ((o.get('via') in AGG or is_hl(o['company_id'])) and (o.get('last_seen') or '') <= SWEEP
-                                    or is_hl(o['company_id']) and not o.get('trust') and not HL_TITLE.search(o.get('title') or '')):
+                                    or is_hl(o['company_id']) and not o.get('trust') and not HL_TITLE.search(o.get('title') or '')
+                                    or (byid.get(o['company_id']) or {}).get('sub') == 'Corporate VC' and not o.get('trust') and not cvc_ok(o.get('title'))):
             o['status'] = 'closed'; o['closed_at'] = NOW_ISO; closed_now += 1
 
     # rattrapage : les offres ouvertes sans durée sont relues une fois en entier (description complète)
