@@ -9,7 +9,7 @@ briques communes du robot de veille (veille.py) et de la découverte (decouverte
 - extraction générique : offres trouvées dans n'importe quelle réponse JSON d'un site
   (API cachée), dans une page HTML (liens d'offres, JSON-LD) ou dans un texte « Nous rejoindre »
 """
-import json, re, os, html, copy, datetime as dt
+import json, re, os, html, copy, tempfile, datetime as dt
 from urllib.parse import urljoin, urlparse, urlencode, parse_qsl, urlunparse, quote
 import requests
 
@@ -38,9 +38,19 @@ def load(name, default=None):
 
 
 def save(name, obj, pretty=False):
-    with open(os.path.join(DATA, name), 'w', encoding='utf-8') as f:
-        if pretty: json.dump(obj, f, ensure_ascii=False, indent=1)
-        else: json.dump(obj, f, ensure_ascii=False, separators=(',', ':'))
+    """Écriture atomique : un passage coupé en route ne laisse jamais un fichier tronqué."""
+    path = os.path.join(DATA, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # fichier temporaire à côté de data/ (même disque) : un reste de passage coupé n'entre jamais dans un « git add »
+    fd, tmp = tempfile.mkstemp(prefix='.save-', dir=os.path.dirname(os.path.abspath(DATA)))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            if pretty: json.dump(obj, f, ensure_ascii=False, indent=1)
+            else: json.dump(obj, f, ensure_ascii=False, separators=(',', ':'))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp): os.remove(tmp)
 
 
 def host_of(u):
@@ -78,6 +88,15 @@ INTERN = re.compile(r"(\bintern\b|\binterns\b|internship|\bstage\b|\bstages\b|st
                     r"insight (?:week|programme|program)|industrial placement|placement year|stagiair|tirocinio|pr[aá]cticas|becario|working student)", re.I)
 INTERN_COMMIT = re.compile(r"intern|stage|stagiaire|apprenti|alternan|trainee|praktik|werkstudent|working student|\bvie\b|graduate", re.I)
 EXCLUDE = re.compile(r"(senior|director|directeur|head of|vice president|\bvp\b|managing|manager(?! intern)|principal\b|partner\b|lead\b|chief|expert confirm)", re.I)
+# mot de stage explicite : « manager », « lead » ou « partner » dans l'intitulé nomment alors le métier (Stage Wealth Manager, Summer Analyst Lead Advisory Team)
+EXPLICIT_STAGE = re.compile(r"\bintern\b|\binterns\b|internship|\bstages?\b|stagiaire|stagiair|off[\s-]?cycle|summer (?:analyst|associate|intern|internship)|praktik|werkstudent|"
+                            r"working student|\btrainee\b|apprenti|alternan|volontariat international|tirocinio|pr[aá]cticas|becario", re.I)
+# vrais seniors : refusés même avec un mot de stage
+REAL_SENIOR = re.compile(r"senior|\bsr\b|director|directeur|directrice|head of|vice president|\bvp\b|managing|chief|principal\b|expert confirm", re.I)
+SENIOR_OK = re.compile(r"assistant(?:e)?s?(?:\(e\))?\s+(?:(?:du|de la|de|au|à la|to the|to|of)\s+)?(?:managing |direction|directeur|directrice|director)\S*|principal invest\w*", re.I)
+# encadrants d'un programme : « Internship Programme Manager », « Lead, Early Careers »
+STAFF_ROLE = re.compile(r"(?:intern(?:ship)?s?|early careers?|campus|graduate|alternance)\s+(?:programmes?\s+|programs?\s+|recruit\w*\s+)?(?:manager|lead|coordinator|director)\b|"
+                        r"\b(?:manager|lead|coordinator)\b\s*(?:[,–-]\s*|\s(?:of|for|des?)\s+)(?:the\s+)?(?:intern(?:ship)?s?\b|stagiaires\b|stages\b|alternan|early careers|campus)", re.I)
 
 DOMAINS = [
     ('M&A / Corporate Finance', r"m&a|mergers|fusions|acquisitions|corporate finance|financial advisory|advisory|investment banking|banque d.affaires|\bibd\b|\becm\b|\bdcm\b|leveraged|lev ?fin|restructuring|capital markets origination"),
@@ -110,14 +129,27 @@ MONTHS = {'janvier': 1, 'january': 1, 'jan': 1, 'janv': 1, 'février': 2, 'fevri
 MONTH_RE = '|'.join(sorted(MONTHS, key=len, reverse=True))
 NUMW = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10, 'twelve': 12,
         'un': 1, 'deux': 2, 'trois': 3, 'quatre': 4, 'cinq': 5, 'sept': 7, 'huit': 8, 'neuf': 9, 'dix': 10, 'douze': 12}
-COUNTRIES = [('France', r"france|paris|lyon|lille|marseille|bordeaux|nantes|toulouse|rennes|strasbourg|nice|la d[ée]fense|neuilly|levallois|boulogne|courbevoie|puteaux|nanterre"),
-             ('Royaume-Uni', r"united kingdom|\buk\b|london|londres|manchester|edinburgh|[ée]dimbourg|birmingham|leeds|glasgow|bristol|england"),
+# limites de mots partout : « Venice », « Regent » ou « Agent » ne sont ni Nice ni Gand. L'ordre compte : le premier pays trouvé gagne.
+# le site lit ces libellés tels quels (liste de filtres construite à partir des données), sans liste fermée.
+COUNTRIES = [('France', r"france|(?-i:FR)|paris(?!,? (?:tx|texas|tn|tennessee)\b)|lyon|lille|marseille|bordeaux|nantes|toulouse|rennes|strasbourg|nice|grenoble|aix|aix-en-provence|la d[ée]fense|neuilly|levallois|boulogne|courbevoie|puteaux|nanterre|issy|issy-les-moulineaux|clichy"),
+             ('Royaume-Uni', r"united kingdom|uk|(?-i:GB)|london(?!,? (?:on|ont|ontario)\b)|londres|manchester(?!,? (?:nh|new hampshire)\b)|edinburgh|[ée]dimbourg|birmingham(?!,? (?:al|alabama)\b)|leeds|glasgow|bristol|england|scotland|[ée]cosse"),
              ('Luxembourg', r"luxembourg"), ('Suisse', r"switzerland|suisse|zurich|z[üu]rich|geneva|gen[èe]ve|lausanne|basel|b[âa]le|lugano|zug|zoug"),
-             ('Belgique', r"belgium|belgique|brussels|bruxelles|antwerp|anvers|gent|gand|li[èe]ge"), ('Allemagne', r"germany|allemagne|frankfurt|francfort|munich|m[üu]nchen|berlin|hamburg|hambourg|d[üu]sseldorf|cologne|stuttgart"),
+             ('Belgique', r"belgium|belgique|brussels|bruxelles|antwerp|anvers|gent|gand|li[èe]ge"), ('Allemagne', r"germany|deutschland|allemagne|(?<=, )(?<!wilmington, )(?-i:DE)|^(?-i:DE)$|frankfurt|francfort|munich|m[üu]nchen|berlin|hamburg|hambourg|d[üu]sseldorf|cologne|k[öo]ln|stuttgart"),
              ('Pays-Bas', r"netherlands|pays-bas|amsterdam|rotterdam|utrecht|the hague|la haye"), ('Espagne', r"spain|espagne|madrid|barcelona|barcelone"),
-             ('Italie', r"italy|italie|milan|milano|rome|roma"), ('États-Unis', r"united states|\busa\b|new york|boston|chicago|san francisco|houston|\bny\b"),
-             ('Monaco', r"monaco"), ('Irlande', r"ireland|irlande|dublin"), ('Hong Kong', r"hong kong"), ('Singapour', r"singapore|singapour"), ('Dubaï', r"dubai|duba[ïi]")]
-COUNTRIES = [(n, re.compile(p, re.I)) for n, p in COUNTRIES]
+             ('Italie', r"italy|italie|milan|milano|rome|roma|turin|torino|venice|venise|venezia"),
+             ('Canada', r"canada|london,? (?:on|ont|ontario)|toronto|montr[ée]al|vancouver|calgary|ottawa"),
+             ('États-Unis', r"united states|[ée]tats-unis|usa|u\.s\.a?\.?|(?-i:US)|new york|nyc|ny|boston|chicago|san francisco|houston|los angeles|seattle|miami|atlanta|dallas|austin|"
+                            r"manchester,? (?:nh|new hampshire)|birmingham,? (?:al|alabama)|paris,? (?:tx|texas|tn|tennessee)|wilmington|philadelphia|charlotte|denver|greenwich|stamford|palo alto|menlo park|washington|california|texas|connecticut|massachusetts|new jersey|jersey city|illinois|florida"),
+             ('Portugal', r"portugal|lisbon|lisbonne|lisboa|porto"), ('Suède', r"sweden|su[èe]de|sverige|stockholm|gothenburg|g[öo]teborg"),
+             ('Pologne', r"poland|pologne|polska|warsaw|varsovie|warszawa|krak[oó]w|cracovie"), ('Autriche', r"austria|autriche|[öo]sterreich|vienna|wien"),
+             ('Norvège', r"norway|norv[èe]ge|norge|oslo"), ('Danemark', r"denmark|danemark|danmark|copenhagen|copenhague|k[øo]benhavn"),
+             ('Finlande', r"finland|finlande|suomi|helsinki"), ('Japon', r"japan|japon|tokyo|osaka"), ('Chine', r"china|chine|beijing|p[ée]kin|shanghai|shenzhen|guangzhou"),
+             ('Inde', r"india|inde|mumbai|bangalore|bengaluru|new delhi|delhi|gurgaon|hyderabad"), ('Australie', r"australia|australie|sydney|melbourne"),
+             ('Qatar', r"qatar|doha"), ('Arabie saoudite', r"saudi arabia|saudi|arabie saoudite|riyadh|riyad|jeddah|djeddah"), ('Maroc', r"morocco|maroc|casablanca|rabat"),
+             ('Hongrie', r"hungary|hongrie|budapest"), ('Grèce', r"greece|gr[èe]ce|athens|ath[èe]nes"), ('Tchéquie', r"czech republic|czechia|tch[ée]quie|r[ée]publique tch[èe]que|prague|praha"),
+             ('Monaco', r"monaco"), ('Irlande', r"ireland|irlande|dublin"), ('Hong Kong', r"hong kong"), ('Singapour', r"singapore|singapour"),
+             ('Émirats arabes unis', r"united arab emirates|[ée]mirats|uae|dubai|duba[ïi]|abu dhabi|abou dabi")]
+COUNTRIES = [(n, re.compile(r'(?<!\w)(?:' + p + r')(?!\w)', re.I)) for n, p in COUNTRIES]
 
 
 def clean(s):
@@ -138,9 +170,15 @@ NOT_INTERN = re.compile(r"\b(?:early|late|later|growth|seed|multi|all|every|any|
                         r"\bstages? of\b|graduate[sd]? (?:of|from|de|du)\b|\bgraduated\b|undergraduate degree|graduate degree", re.I)
 
 
+def senior_title(t):
+    return bool(REAL_SENIOR.search(SENIOR_OK.sub(' ', t or '')))
+
+
 def is_intern(title):
     t = NOT_INTERN.sub(' ', title or '')
-    if not (INTERN.search(t) or VIE_RE.search(t)) or EXCLUDE.search(re.sub(INTERN, '', t)) or NAVLIKE.search(t.strip()): return False
+    if not (INTERN.search(t) or VIE_RE.search(t)) or NAVLIKE.search(t.strip()): return False
+    rest = re.sub(INTERN, '', t)
+    if EXCLUDE.search(rest) and (not EXPLICIT_STAGE.search(t) or senior_title(rest) or STAFF_ROLE.search(t)): return False
     words = [w.lower() for w in re.findall(r"[\w&/'-]+", t)]
     if len(words) <= 4 and all(w in GENERIC or w.isdigit() for w in words): return False
     return True
@@ -211,6 +249,19 @@ def hors_finance(title):
     return bool(NONFIN.search(t)) and not FINWORD.search(t)
 
 
+# réseau bancaire de détail (agences, guichets) : pas un métier de la finance visé, même avec le mot « banque »
+RETAIL_NET = re.compile(r"conseill\w*(?:\(e\))?\s+(?:en\s+|de\s+)?(?:client[èe]le|bancaire|accueil|particuliers?|commercial)|"
+                        r"charg[ée]\w*(?:\(e\))?\s+(?:de\s+|d['’]\s*)(?:client[èe]le|accueil)(?!\s+(?:institution|private|banque priv|grands|corporate|entreprises))|"
+                        r"agences? bancaires?|\ben agence\b|r[ée]seau (?:d['’]agences|bancaire)|banque de d[ée]tail|retail bank|bank teller|\bteller\b|\bguichet|"
+                        r"branch (?:banker|manager|advisor|adviser|intern)|personal banker|personal banking|customer advisor", re.I)
+RETAIL_CENTRAL = re.compile(r"risk|risque|audit|strat[ée]g|strategy|compliance|conformit|quant|m\s?&\s?a|inspection", re.I)
+
+
+def reseau_detail(title):
+    t = title or ''
+    return bool(RETAIL_NET.search(t)) and not RETAIL_CENTRAL.search(t)
+
+
 def finance_strict(title, hl_title=None):
     """Grand groupe dont seule la branche finance / CVC nous intéresse (Sopra Steria, CS Group, Air Liquide, Swisscom, CNP…) :
     intitulé finance exigé, postes techniques / R&D écartés sauf intitulé finance fort."""
@@ -229,7 +280,8 @@ def keep_offer(x):
     if not_offer(t): return False
     if is_intern(t): return True
     com = x.get('commit') or ''
-    return bool(com and INTERN_COMMIT.search(com) and not EXCLUDE.search(t) and not NAVLIKE.search(t))
+    # type de contrat « stage » donné par la plateforme : seuls les vrais seniors sont écartés
+    return bool(com and INTERN_COMMIT.search(com) and not senior_title(t) and not STAFF_ROLE.search(t) and not NAVLIKE.search(t))
 
 
 def contract_of(t):
@@ -410,10 +462,15 @@ def start_asap(text):
     return bool(re.search(r"(?:stage|internship|intern|stagiaire|poste)\b[^.\n]{0,40}\b(?:asap|d[èe]s que possible)\b", t))
 
 
+DL_STOP = re.compile(r"rolling|au fil de l.eau|non pr[ée]cis|not (?:specified|stated|applicable)|\bn/?a\b|\bnone\b|\baucune?\b|\bsans\b|d[ée]but|start|commenc|\bsending\b|\bstage du\b|\bdu \d", re.I)
+
+
 def deadline_of(text):
     t = (text or '').lower()
     for m in re.finditer(r"date limite|deadline|closing date|apply (?:by|before)|candidatures? (?:jusqu|avant)|applications? (?:close|closing|must be received|will close)|cl[ôo]ture des candidatures|postuler avant|valable jusqu", t):
-        d = find_date(t[m.end():m.end() + 70])
+        win = t[m.end():m.end() + 70]
+        stop = DL_STOP.search(win)  # « rolling », « non précisée », « début » : la date qui suit n'est pas une date limite
+        d = find_date(win[:stop.start()] if stop else win)
         if d and d >= NOW.date().isoformat(): return d
     return None
 
@@ -440,6 +497,49 @@ def country_of(loc):
     for n, rx in COUNTRIES:
         if rx.search(loc or ''): return n
     return ''
+
+
+SEASON_END = {'summer': 9, 'sommer': 9, "[ée]t[ée]": 9, 'spring': 7, 'printemps': 7}
+# année qui n'est pas un millésime de programme : référence d'offre, texte de loi, rapport, norme
+YEAR_NOT = re.compile(r"(?:r[ée]f(?:[ée]rence)?\.?|req\.?|n°|job id|rapport|annuel(?:le)?|bilan|exercice|comptes|budget|loi|finances|plf|plfss|esg|csrd|iso|ifrs(?: \d+)?|ias(?: \d+)?|"
+                      r"b[âa]le|basel|solvency(?: ii)?|norme|vision|objectif|plan)\s*[:#-]?\s*$", re.I)
+# mots qui font d'une année le millésime d'un programme, juste avant ou juste après elle
+YEAR_WORD = r"summer|sommer|spring|autumn|fall|winter|[ée]t[ée]|printemps|automne|hiver|intern(?:ship)?s?|stages?|stagiaires?|analysts?|analystes?|associates?|programmes?|programs?|graduates?|off[- ]?cycle|" \
+            r"intake|cohort|alternance|apprentissage|rentr[ée]e|promo(?:tion)?|class of|fin d['’]?[ée]tudes|c[ée]sure|start(?:ing)?|d[ée]but|week|" + MONTH_RE
+YEAR_BEFORE = re.compile(r"(?:^|\b)(?:" + YEAR_WORD + r")\.?\s*[:(–-]?\s*$", re.I)
+YEAR_AFTER = re.compile(r"^\s*[:)–-]?\s*(?:" + YEAR_WORD + r")\b", re.I)
+YEAR_RE = re.compile(r"(?<![\w-])(20[12]\d)(?:\s*[/-]\s*(20[12]\d|\d{2})(?![\d]))?(?![\w]|[.-]\d)")
+SOUTH = re.compile(r"australi|new zealand|nouvelle[- ]z[ée]lande|sydney|melbourne|south africa|afrique du sud|brazil|br[ée]sil", re.I)
+
+
+def past_title(title, now=None):
+    """Le titre vise-t-il une période finie ? Seule une année en forme de millésime compte (« 2024 Blackstone… », « Class of 2025 »,
+    « Stage 2025/2026 ») ; une référence, une loi ou un rapport (« Réf 2024-12 », « Rapport annuel 2025 ») ne compte pas."""
+    now = now or NOW
+    t = (title or '').strip()
+    years, ranged = [], False
+    for m in YEAR_RE.finditer(t):
+        before, after = t[:m.start()], t[m.end():]
+        if YEAR_NOT.search(before[-30:]): continue
+        edge = not before.strip(' -–|:([') or not after.strip(' -–|:).]')  # en tête ou en fin de titre
+        if not (edge or YEAR_BEFORE.search(before[-25:]) or YEAR_AFTER.search(after[:25])): continue
+        y = int(m.group(1))
+        if m.group(2):
+            y2 = int(m.group(2)); y2 = y2 if y2 > 2000 else 2000 + y2
+            if y2 < y or y2 > y + 2: continue  # « 2024-0012 » ou « 2024-99 » : pas une année universitaire
+            y = y2; ranged = True
+        years.append(y)
+    if not years: return False
+    y = max(years)
+    if y < now.year: return True
+    if y > now.year: return False
+    if ranged: return now.month >= 9  # année universitaire finie à l'été
+    low = t.lower()
+    if not SOUTH.search(t):
+        for w, mo in SEASON_END.items():
+            if re.search(r'\b' + w + r'\b', low) and now.month >= mo: return True
+    s = _start_of(t)
+    return bool(s and s < now.strftime('%Y-%m'))
 
 
 def posted_from_text(s):
@@ -571,7 +671,7 @@ def j_workday(c, a):
     host, tenant, site = a
     base = f'https://{host}/wday/cxs/{tenant}/{site}'
     out, seen, okq, errs = [], set(), 0, 0
-    for q in ['intern', 'stage', 'summer', 'off-cycle', 'trainee', 'praktikum', 'alternance', 'graduate', 'VIE']:
+    for q in ['intern', 'stage', 'stagiaire', 'summer', 'analyst', 'off-cycle', 'trainee', 'praktikum', 'werkstudent', 'tirocinio', 'prácticas', 'alternance', 'graduate', 'VIE']:
         for off in range(0, 200, 20):
             try: js = post(base + '/jobs', {'appliedFacets': {}, 'limit': 20, 'offset': off, 'searchText': q}).json(); okq += 1
             except Exception: errs += 1; break
@@ -664,20 +764,32 @@ def j_breezy(c, slug):
              'commit': (j.get('type') or {}).get('name', '') if isinstance(j.get('type'), dict) else str(j.get('type') or '')} for j in js]
 
 
+EIGHTFOLD_PAGES = 10
+
+
 def j_eightfold(c, slug):
     dom = host_of(site_of(c))
-    out, okq, errs = [], 0, 0
+    out, seen, okq, errs = [], set(), 0, 0
     for q in ['intern', 'stage', 'summer', 'analyst program']:
-        try: js = get(f'https://{slug}.eightfold.ai/api/apply/v2/jobs', params={'domain': dom, 'start': 0, 'num': 100, 'query': q}).json(); okq += 1
-        except Exception: errs += 1; continue
-        for j in js.get('positions', []):
-            out.append({'title': j.get('name'), 'url': j.get('canonicalPositionUrl') or f"https://{slug}.eightfold.ai/careers?pid={j.get('id')}", 'location': j.get('location', ''),
-                        'posted': iso(j.get('t_create')), 'ext': str(j.get('id'))})
+        start = 0
+        for _ in range(EIGHTFOLD_PAGES):  # la plateforme peut renvoyer moins que « num » : on avance du nombre d'offres reçues
+            try: js = get(f'https://{slug}.eightfold.ai/api/apply/v2/jobs', params={'domain': dom, 'start': start, 'num': 100, 'query': q}).json(); okq += 1
+            except Exception: errs += 1; break
+            lst = js.get('positions') or []
+            new = 0
+            for j in lst:
+                jid = str(j.get('id'))
+                if jid in seen: continue
+                seen.add(jid); new += 1
+                out.append({'title': j.get('name'), 'url': j.get('canonicalPositionUrl') or f"https://{slug}.eightfold.ai/careers?pid={j.get('id')}", 'location': j.get('location', ''),
+                            'posted': iso(j.get('t_create')), 'ext': jid})
+            start += len(lst)
+            if not lst or not new or start >= (js.get('count') or 10 ** 6): break
     if not okq: raise RuntimeError('eightfold injoignable')
     return Partial(out) if errs else out
 
 
-KW_SEARCH = ['intern', 'internship', 'stage', 'stagiaire', 'summer', 'off-cycle', 'graduate', 'trainee', 'alternance', 'praktikum', 'VIE']
+KW_SEARCH = ['intern', 'internship', 'stage', 'stagiaire', 'summer', 'analyst', 'off-cycle', 'graduate', 'trainee', 'alternance', 'praktikum', 'werkstudent', 'tirocinio', 'prácticas', 'VIE']
 API_KW = ['intern', 'stage', 'stagiaire', 'summer', 'graduate', 'alternance', 'off-cycle', 'trainee']
 
 
@@ -807,7 +919,7 @@ def is_job_url(u):
     segs = [x for x in p.path.split('/') if x]
     last = (segs[-1] if segs else '').lower()
     last = re.sub(r'\.(html?|aspx?|php)$', '', last)
-    if re.search(r'(?:^|[?&])(?:id|jobid|job_id|reqid|req_id|gh_jid|pid|jid|offerid|offer_id|vacancyid|ref)=\w', p.query, re.I): return True
+    if re.search(r'(?:^|[?&])(?:id|jobid|job_id|reqid|req_id|gh_jid|pid|jid|offerid|offer_id|vacancyid|ref|annonce)=\w', p.query, re.I): return True
     if SEARCHY.search(p.query): return False
     if not last or CATEGORY.match(last): return False
     if u.lower().endswith('.pdf'): return True
@@ -981,6 +1093,7 @@ def best_job_list(js):
 def map_item(d, base, tpl=None, tkey=None):
     _, title = _title(d)
     uk, uv = _first(d, URL_KEYS)
+    if isinstance(uv, dict): uv = uv.get('url')  # certaines API renvoient {"url": ...}
     ik, iv = _first(d, ID_KEYS)
     url = None
     if tpl and tkey and d.get(tkey) not in (None, ''):
@@ -1207,3 +1320,57 @@ def detail_text(kind, url):
         l = lds[0]; return (l['desc'] or clean(h)[:6000]) + ' ' + l.get('commit', ''), l.get('deadline'), l.get('location', ''), l.get('posted')
     body = re.sub(r'(?is)<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ', h)
     return clean(body)[:8000], None, '', None
+
+
+# ---------------------------------------------------------------- liens des agrégateurs
+AGG_HOST = re.compile(r"(?:^|\.)(?:indeed|glassdoor|google|linkedin|ziprecruiter|jooble|talent|adzuna|monster|simplyhired)\.", re.I)
+EXPIRED = re.compile(r"(?:this|the) (?:job|position|posting|vacancy|offer|role) (?:has |is |was )?(?:now )?(?:expired|closed|been filled|no longer (?:available|active|open))|"
+                     r"no longer accepting applications|job (?:is )?no longer available|position has been filled|job not found|"
+                     r"(?:cette |l['’])\s*(?:offre|annonce)\s+(?:d['’]emploi\s+)?(?:n['’]est plus (?:disponible|active|en ligne|valable)|a expir[ée]|est expir[ée]e|est pourvue|a [ée]t[ée] pourvue|est cl[ôo]tur[ée]e)|"
+                     r"offre (?:expir[ée]e|pourvue|cl[ôo]tur[ée]e)|annonce expir[ée]e", re.I)
+_LINK = requests.Session()
+_LINK.headers.update({'User-Agent': UA, 'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8'})
+
+
+def visible_text(h):
+    """Texte affiché d'une page : sans scripts ni styles, où traînent des libellés jamais montrés (« this job has expired »). Page coupée en route comprise."""
+    return clean(re.sub(r'(?is)<(script|style|noscript|template)\b.*?(?:</\1\s*>|\Z)', ' ', h or ''))
+
+
+def direct_ok(u):
+    """Lien officiel utilisable : fiche d'une offre hors agrégateur."""
+    u = u or ''
+    return u.startswith('http') and not AGG_HOST.search(host_of(u) + '.') and (bool(detect_ats(u)) or is_job_url(u))
+
+
+def link_state(url):
+    """'dead' (404, 410, page expirée), 'ok', 'blocked' (403, 429) ou 'unknown'. Sans nouvel essai : le budget est compté par passage."""
+    try:
+        r = _LINK.get(url, timeout=8, stream=True, allow_redirects=True)
+        try:
+            if r.status_code in (404, 410): return 'dead'
+            if r.status_code in (401, 403, 429): return 'blocked'
+            if r.status_code != 200: return 'unknown'
+            buf = b''
+            for chunk in r.iter_content(32768):
+                buf += chunk
+                if len(buf) > 200_000: break
+            return 'dead' if EXPIRED.search(visible_text(buf.decode('utf-8', 'ignore'))) else 'ok'
+        finally:
+            r.close()
+    except Exception:
+        return 'unknown'
+
+
+# ---------------------------------------------------------------- grands noms sans lecture fiable
+LECTURE_OK = ('ats', 'api', 'html', 'render', 'wttj')
+
+
+def prio_ids(structs, recettes):
+    """Grands noms dont la lecture est faible (rien, ou texte surveillé) : découverte retentée en premier. data/prio.json ajoute des identifiants à la main."""
+    out = {x for x in (load('prio.json') or []) if isinstance(x, str)}
+    for c in structs or []:
+        if c.get('size') != 'large' and c.get('fam') not in ('bb', 'eb'): continue
+        ms = (recettes.get(c['id']) or {}).get('methods') or []
+        if not any(m.get('m') in LECTURE_OK for m in ms): out.add(c['id'])
+    return out
