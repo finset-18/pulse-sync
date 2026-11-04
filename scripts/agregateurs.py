@@ -9,7 +9,7 @@ réapparaître (veille.py). Les offres d'une structure déjà lue par sa platefo
 """
 import os, re, time
 from concurrent.futures import ThreadPoolExecutor
-from commun import S, clean, is_intern, FIN_TITLE, iso, _norm, country_of, load, save
+from commun import S, clean, is_intern, FIN_TITLE, iso, _norm, country_of, load, save, official_site
 from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, AGG, is_hl
 
 PER_PASS = int(os.environ.get('AGG_PER_PASS', '30'))
@@ -247,7 +247,8 @@ def run_aggregators(structs, recettes, run_no, log=print):
             cid = 'h_in_' + key[:40]
             ps = pseudo.setdefault(cid, {'id': cid, 'name': comp[:80], 'fam': '', 'city': '', 'site': '', 'url': '', 'hors_liste': True})
             if csite and not ps['site']:
-                ps['site'] = csite  # site de l'entreprise (pour son logo), jamais celui de l'agrégateur
+                # site de l'entreprise (pour son logo), jamais celui de l'agrégateur ni d'une plateforme de recrutement
+                ps['site'] = official_site({'site': csite})
         dk = (cid, _norm(title), country_of(x.get('location') or ''))
         if dk in dedup:
             continue  # même offre vue sur plusieurs agrégateurs

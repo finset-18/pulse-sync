@@ -53,6 +53,25 @@ def site_of(c):
     return c.get('site') or ('https://' + host_of(c.get('url')) + '/' if c.get('url') else '')
 
 
+# sites qui ne donnent jamais le logo de l'entreprise (agrégateurs, plateformes de recrutement, réseaux)
+NOLOGO_HOST = re.compile(r"(?:^|\.)(?:indeed|glassdoor|google|linkedin|welcometothejungle|welcomekit|jobteaser|francetravail|pole-emploi|apec|efinancialcareers|"
+                         r"myworkdayjobs|myworkdaysite|workday|greenhouse|lever|smartrecruiters|ashbyhq|workable|recruitee|personio|teamtailor|icims|jobvite|avature|taleo|"
+                         r"successfactors|sapsf|talent-soft|talentsoft|digitalrecruiters|csod|cornerstoneondemand|flatchr|jobaffinity|taleez|join|softgarden|pinpointhq|bamboohr|"
+                         r"breezy|eightfold|oraclecloud|phenompeople|radancy|ultipro|ukg|bullhorn|beetween|werecruit|kenjo|factorialhr|zohorecruit|manatal|rippling|dover|homerun|"
+                         r"jobylon|varbi|emply|hr-manager|simplify|themuse|arbeitnow|trackr|wikipedia|wikidata|facebook|twitter|x|instagram|youtube|github)\.", re.I)
+
+
+def official_site(c):
+    """Site officiel de l'entreprise (pour son logo) : jamais une plateforme de recrutement ni un agrégateur ;
+    « careers.x.com » devient « x.com »."""
+    for u in (c.get('site'), ('https://' + c['domain'] + '/') if c.get('domain') else '', c.get('url')):
+        h = host_of(u)
+        if not h or '.' not in h or NOLOGO_HOST.search(h + '.'): continue
+        h = re.sub(r'^(?:careers?|jobs?|carrieres?|carriere|recrutement|talents?|join|emplois?|apply|work|hiring)\.', '', h)
+        return 'https://' + h + '/'
+    return ''
+
+
 # ---------------------------------------------------------------- filtres
 INTERN = re.compile(r"(\bintern\b|\binterns\b|internship|\bstage\b|\bstages\b|stagiaire|off[\s-]?cycle|summer (?:analyst|associate|intern|internship|programme|program)|"
                     r"praktik|werkstudent|\btrainee\b|apprenti|alternan|volontariat international|graduate|spring (?:week|insight)|"
@@ -127,10 +146,87 @@ def is_intern(title):
     return True
 
 
+# ---------------------------------------------------------------- textes qui ne sont pas des offres
+# titres de page (« Carrières | X », « Nos offres de stage »), bios (« X a rejoint… après un stage chez… »),
+# bandeaux cookies / mentions légales, articles et témoignages (« Rencontre avec notre stagiaire »)
+PAGE_HEAD = re.compile(r"^(?:carri[èe]res?|careers?|nous rejoindre|rejoignez[- ]nous|join us|join our team|work with us|travailler (?:chez|avec)|recrutement|"
+                       r"offres? d.emploi|job offers?|jobs?|opportunit(?:[ée]s|ies)|early careers?|students?(?: (?:and|&) graduates?)?|"
+                       r"[ée]tudiants?(?: (?:et|&) jeunes dipl[ôo]m[ée]s)?|jeunes dipl[ôo]m[ée]s|nos offres(?: de stages?| d.emploi)?|nos stages|our (?:offers|internships|programmes?|programs?)|"
+                       r"stages? (?:et|&) alternances?|internships? (?:and|&) graduate (?:programmes?|programs?))\b", re.I)
+JUNK = re.compile(r"cookie|consentement|\bconsent\b|privacy|confidentialit[ée]|mentions l[ée]gales|legal notice|politique de|\bgdpr\b|\brgpd\b|terms of use|conditions g[ée]n[ée]rales|"
+                  r"newsletter|lire la suite|read more|en savoir plus|cliquez|click here|sign up|s.inscrire|log ?in\b|connexion|"
+                  r"\bblog\b|\bnews\b|actualit[ée]s?|\barticle|podcast|webinar|webinaire|\binterview\b|portrait|t[ée]moignage|retour d.exp[ée]rience|rencontre avec|"
+                  r"meet (?:our|the)\b|day in the life|une journ[ée]e (?:avec|dans|chez)|how to\b|comment (?:r[ée]ussir|d[ée]crocher|pr[ée]parer|trouver)|\d+ (?:conseils|tips|astuces)|"
+                  r"\bannounces?\b|\braises?\b|\bl[èe]ve \d|closes (?:its|a|an|the)|communiqu[ée] de presse|press release|"
+                  r"\b(?:a|has|est|was|is) (?:rejoint|joined)\b|\bjoined\b|before joining|avant de rejoindre|previously|pr[ée]c[ée]demment|holds an?\b|titulaire d|"
+                  r"is a graduate|graduated from|dipl[ôo]m[ée]e? (?:de|d.|du)\b|began (?:his|her) career|a d[ée]but[ée] (?:sa|son)|"
+                  r"\b(?:he|she|his|her)\b|\b(?:il|elle) (?:a|est)\b|a effectu[ée] (?:un|son|plusieurs)|completed (?:an?|his|her) internship|after (?:an?|his|her) internship", re.I)
+OFFER_ROLE = re.compile(r"analy|associate|assistant|stagiaire|intern\b|trainee|summer|off[- ]?cycle|m&a|private equity|investissement|investment|financ|audit|transaction|venture|"
+                        r"fusions|acquisitions|banking|dette|debt|cr[ée]dit|credit|valuation|asset|gestion|trading|market|conseil|advisory|consult|fund|fonds|equity|"
+                        r"immobilier|real estate|infrastructure|strat[ée]g|strategy|risk|risque|compliance|contr[ôo]l|tr[ée]sor|treasury|comptab|account|quant|research|recherche", re.I)
+
+
+def not_offer(title):
+    """Le texte est-il autre chose qu'une offre (titre de page, bio, bandeau cookies, article) ?"""
+    t = clean(title)
+    if not t: return True
+    if JUNK.search(t): return True
+    words = t.split()
+    if len(words) > 18 or (len(t) > 80 and t.endswith(('.', '!', '?'))): return True  # une phrase, pas un intitulé
+    if PAGE_HEAD.search(t):
+        rest = PAGE_HEAD.sub(' ', t, count=1)
+        rest = re.sub(r"\b(?:stages?|internships?|intern|graduates?|programmes?|programs?|alternances?|summer|spring|20\d\d|chez|at|de|des|du|la|le|les|nos|our|and|et|&)\b", ' ', rest, flags=re.I)
+        if not OFFER_ROLE.search(rest): return True
+    return False
+
+
+# ---------------------------------------------------------------- offres hors finance
+# règles reprises de l'affichage (TK_NONFIN / TK_FINWORD dans fincv_tpl.html), appliquées à la source
+NONFIN = re.compile(r"marketing|communication|\brh\b|human resources|ressources humaines|talent acquisition|recrut|recruit|\bit\b|\bsi\b|developer|d[ée]veloppeur|"
+                    r"engineer|ing[ée]nieur|software|logiciel|cyber|devops|cloud|\bdesign|achats|procurement|purchas|supply chain|logisti|\blegal\b|juridique|juriste|avocat|"
+                    r"facilities|hospitality|h[ôo]tel|sales representative|\bvente|commercial(?! banking)|product (?:manager|owner)|\bux\b|\bui\b|graphi|\bseo\b|\bbrand|"
+                    r"[ée]v[ée]nementiel|\bevents?\b|\bpeople\b|payroll|\bpaie\b|office manager|assistant(?:e)? (?:de direction|administrati|commercial|rh)|"
+                    r"data (?:engineer|scien)|r[ée]seaux?\b|t[ée]l[ée]com|[ée]lectroni|m[ée]cani|embarqu|chimi|biolog|laboratoire|\bproduction\b|maintenance|qualit[ée]\b|\bhse\b|"
+                    r"industrialisation|usine|chantier|\btravaux|\bbtp\b|g[ée]nie civil|architecte|\btest(?:eur|ing)?\b|support (?:it|informatique|technique)|helpdesk|\br&d\b|"
+                    r"pr[ée]-?th[èe]se|\bth[èe]se\b|cifre|doctora|thermo|quantique|quantum|spatial|a[ée]rospatial", re.I)
+FINWORD = re.compile(r"financ|invest|m\s?&\s?a\b|merger|fusion|acquisition|private equity|venture|\blbo\b|quant(?!ique|um|ifi)|trading|trader|credit|cr[ée]dit|audit|"
+                     r"\brisk|risque|compliance|conformit|treasury|tr[ée]sor|banking|banque|\bbank|valuation|[ée]valuation financ|\bequity|\bfunds?\b|\bfonds\b|wealth|patrimoin|"
+                     r"\basset|portefeuille|portfolio|actuar|comptab|accounting|contr[ôo]le de gestion|controll|fp&a|fiscal|\btax\b|\bdeals?\b|transaction|structur(?:ing|ed|eur)|"
+                     r"produits structur|stress[- ]test|corporate dev|capital[- ](?:investissement|risque|markets)|march[ée]s financiers|\bmarkets\b", re.I)
+# intitulés finance « forts » : gardés même dans un grand groupe (« Software Engineer – Investment Team » mis à part, très rare)
+CORE_FIN = re.compile(r"m\s?&\s?a\b|merger|fusions?[- ](?:et )?acquisitions?|private equity|capital[- ](?:investissement|risque|d[ée]veloppement)|venture|\bcvc\b|"
+                      r"corporate finance|finance d.entreprise|corporate development|corp\.? ?dev\b|d[ée]veloppement corporate|\binvestment(?:s)?\b|investissements?\b|investisseurs?|"
+                      r"\blbo\b|fundrais|lev[ée]e de fonds|valuation|due diligence|banque d.affaires|investment bank|business angel|prise de participations?", re.I)
+# grands groupes : postes techniques / R&D / industriels jamais finance, sauf intitulé finance fort
+GROUP_HORS = re.compile(r"d[ée]velopp(?!ement corporate)|ing[ée]nieur|engineer|software|logiciel|cyber|devops|cloud|\bsap\b|\berp\b|\bit\b|informatique|data (?:engineer|scien)|"
+                        r"r[ée]seaux?\b|t[ée]l[ée]com|[ée]lectroni|embarqu|m[ée]cani|thermo|quantifi|quantique|quantum|pr[ée]-?th[èe]se|\bth[èe]se|doctora|\bphd\b|\br&d\b|spatial|"
+                        r"chimi|biolog|laboratoire|mat[ée]riaux|\bproduction\b|maintenance|qualit[ée]\b|\bhse\b|\btest(?:eur|ing)?\b|consultant(?:e)? (?:fonctionnel|technique|sap|erp|it|data|cyber|digital|cloud)", re.I)
+ANALYST = re.compile(r"\banaly(?:st|ste)s?\b", re.I)
+NOT_FIN_ANALYST = re.compile(r"(?:business|data|\bit|\bsoc|test|functional|fonctionnel|syst[eè]mes?|cyber|security|s[ée]curit[ée]|\bsap|\bbi|marketing|supply|crm|digital|web|product|ops|m[ée]tier)\s*-?\s*analy", re.I)
+
+
+def hors_finance(title):
+    """Métier hors finance (marketing, RH, IT, ingénierie…) sans aucun mot finance dans l'intitulé."""
+    t = re.sub(r"business develop\w*", ' ', title or '', flags=re.I)
+    return bool(NONFIN.search(t)) and not FINWORD.search(t)
+
+
+def finance_strict(title, hl_title=None):
+    """Grand groupe dont seule la branche finance / CVC nous intéresse (Sopra Steria, CS Group, Air Liquide, Swisscom, CNP…) :
+    intitulé finance exigé, postes techniques / R&D écartés sauf intitulé finance fort."""
+    t = title or ''
+    if CORE_FIN.search(t): return True
+    if GROUP_HORS.search(t) or hors_finance(t): return False
+    if hl_title is not None and hl_title.search(t): return True
+    if FINWORD.search(t): return True
+    return bool(ANALYST.search(t) and not NOT_FIN_ANALYST.search(t))
+
+
 def keep_offer(x):
     """Une offre brute est-elle un stage (titre explicite, ou type de contrat donné par la plateforme) ?"""
     t = clean(x.get('title'))
     if not t or not x.get('url'): return False
+    if not_offer(t): return False
     if is_intern(t): return True
     com = x.get('commit') or ''
     return bool(com and INTERN_COMMIT.search(com) and not EXCLUDE.search(t) and not NAVLIKE.search(t))
@@ -157,21 +253,93 @@ def domain_of(title, desc, fam):
 
 
 WEEKS_SKIP = re.compile(r"^\s*(?:of\s+)?(?:paid\s+)?(?:leave|vacation|holiday|annual|notice|cong[ée]s|de cong|de vacances|pr[ée]avis)", re.I)
+# « 6 mois d'expérience », « dans les 6 mois », « tous les 3 mois » : pas une durée de stage
+DUR_AFTER_SKIP = re.compile(r"^\s*(?:minimum\s+|au moins\s+|at least\s+)?(?:d['’]\s*exp[ée]rience|de pratique|of (?:relevant |professional |work )?experience|experience|exp[ée]rience|apr[èe]s|after|ago|plus tard|later|d['’]anciennet[ée])", re.I)
+DUR_BEFORE_SKIP = re.compile(r"(?:dans les|within|every|tous les|toutes les|chaque|il y a|depuis|since|last|derniers?|past|prochains|next|tou?tes? les|d[ée]lai de|pendant les|during the first)\s*$", re.I)
+# fenêtre de candidature / date limite : jamais lue comme début ou durée
+WINDOW_CTX = re.compile(r"(?:candidat|application|apply|postul|recrutement|recruitment|deadline|date limite|entretiens?|interviews?|cl[ôo]tur|closing|publi[ée]|posted|valable|jusqu)", re.I)
+END_GAP = re.compile(r"\b(?:fin|end|ending|until|till|jusqu\w*|to|au|aux|à|deadline|limite|avant|before|by|cl[ôo]tur\w*|close[sd]?|closing|expir\w*|valable|candidat\w*|applications?|apply|postul\w*)\b", re.I)
+ASAP_RE = re.compile(r"\b(?:asap|a\.s\.a\.p|as soon as possible|d[èe]s que possible|imm[ée]diatement|immediate(?:ly)?|d[èe]s maintenant|au plus t[ôo]t|d[èe]s à pr[ée]sent)\b", re.I)
+START_KW = re.compile(r"(?:date de d[ée]but|d[ée]but(?: du stage| de stage| de mission)?|start(?:ing)?(?: date)?|starts|commen\w+|à partir d[eu]|a partir d[eu]|à compter d[eu]|disponibilit[ée]|à pourvoir|prise de poste|d[ée]marrage|intake|int[ée]gration|beginning|starting from|d[èe]s (?=(?:" + MONTH_RE + r")\b))", re.I)
+
+
+def _num(s):
+    return int(s) if s.isdigit() else NUMW.get(s)
+
+
+def _months_between(y1, m1, y2, m2, d1=None, d2=None):
+    if d1 and d2:
+        try:
+            n = round(((dt.date(y2, m2, d2) - dt.date(y1, m1, d1)).days + 1) / 30.44)
+        except Exception:
+            return None
+    else:
+        n = (y2 - y1) * 12 + (m2 - m1) + 1
+    return n if 1 <= n <= 24 else None
+
+
+DMY = r"(\d{1,2})[/.-](\d{1,2})[/.-](20\d{2})"
+DMONY = r"(\d{1,2})(?:er|st|nd|rd|th)?\s+(" + MONTH_RE + r")\.?\s+(20\d{2})"
+MONY = r"(" + MONTH_RE + r")\.?\s*(20\d{2})?"
+RANGE_SEP = r"\s*(?:-|–|—|à|au|a|to|till|until|jusqu['’]?(?:au|à|en)?|/)\s*"
+
+
+def period_of(text):
+    """Période de stage écrite en clair (« du 05/01/2027 au 30/06/2027 », « janvier à juin 2027 », « Sept 2027 – Feb 2028 »).
+    Renvoie (début 'AAAA-MM', durée en mois) ou (None, None). Ignore les fenêtres de candidature."""
+    t = (text or '').lower()
+    for m in re.finditer(r"(?:du\s+|from\s+|de\s+)?" + DMY + RANGE_SEP + DMY, t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        d1, m1, y1, d2, m2, y2 = (int(x) for x in m.groups())
+        if 1 <= m1 <= 12 and 1 <= m2 <= 12:
+            n = _months_between(y1, m1, y2, m2, d1, d2)
+            if n: return f"{y1}-{m1:02d}", n
+    for m in re.finditer(r"(?:du\s+|from\s+|de\s+)?" + DMONY + RANGE_SEP + DMONY, t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        d1, mo1, y1, d2, mo2, y2 = m.groups()
+        n = _months_between(int(y1), MONTHS[mo1], int(y2), MONTHS[mo2], int(d1), int(d2))
+        if n: return f"{y1}-{MONTHS[mo1]:02d}", n
+    for m in re.finditer(r"\b(?:de\s+|d['’]\s*|from\s+|du mois de\s+)?" + MONY + RANGE_SEP + r"(?:fin\s+|end of\s+)?" + r"(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        mo1, y1, mo2, y2 = m.groups()
+        a, b, y2 = MONTHS[mo1], MONTHS[mo2], int(y2)
+        y1 = int(y1) if y1 else (y2 if a <= b else y2 - 1)
+        n = _months_between(y1, a, y2, b)
+        if n: return f"{y1}-{a:02d}", n
+    return None, None
+
 
 def months_of(text):
+    """Durée du stage en mois, seulement si elle est écrite (jamais devinée)."""
     t = (text or '').lower()
     t = re.sub(r'\((\d{1,2})\)', r'\1', t)  # « six (6) mois »
-    m = re.search(r'(\d{1,2})\s*(?:-|à|a|to|/)\s*(\d{1,2})\s*(?:mois|months?)', t)
-    if m: return int(m.group(2))
-    m = re.search(r'(\d{1,2})\s*[- ]?(?:mois|months?|month)\b', t)
-    if m and 1 <= int(m.group(1)) <= 24: return int(m.group(1))
-    m = re.search(r'\b(' + '|'.join(NUMW) + r')[\s-](?:mois|months?|month)\b', t)
-    if m: return NUMW[m.group(1)]
+    t = t.replace(' ', ' ')
+    W = r'\b(\d{1,2}|' + '|'.join(NUMW) + r')'
+    ok = lambda m: not DUR_AFTER_SKIP.search(t[m.end():m.end() + 30]) and not DUR_BEFORE_SKIP.search(t[max(0, m.start() - 25):m.start()])
+    # « 4 à 6 mois », « 4-6 months », « entre 4 et 6 mois », « 4 or 6 months » : la durée la plus longue
+    for m in re.finditer(r'(?:entre\s+|between\s+)?' + W + r'\s*(?:-|–|à|a|to|/|et|and|ou|or)\s*' + W + r'\s*(?:mois|months?)\b', t):
+        a, b = _num(m.group(1)), _num(m.group(2))
+        if a and b and 1 <= a < b <= 24 and ok(m): return b
+    for m in re.finditer(W + r'\s*[- ]?(?:mois|months?|month|mo)\b', t):
+        n = _num(m.group(1))
+        if n and 1 <= n <= 24 and ok(m): return n
+    m = re.search(r"\b(?:un|one|1)\s+semestre\b|\bsemester[- ]long\b|\bone semester\b", t)
+    if m: return 6
+    for m in re.finditer(r"\b(?:un|one|1|a)[\s-](?:an|year)\b(?:\s+(?:internship|placement|stage|de stage|contract|programme|program))?", t):
+        if ok(m) and re.search(r"intern|placement|stage|stagiaire|c[ée]sure|gap year|contrat|contract|dur[ée]e|duration|programme|program", t[max(0, m.start() - 40):m.end() + 40]):
+            return 12
     # durée en semaines (summer, spring week…) : 10 semaines ≈ 2 mois
     for m in re.finditer(r'\b(\d{1,2}|' + '|'.join(NUMW) + r')[\s-](?:weeks?|semaines?)\b', t):
         n = int(m.group(1)) if m.group(1).isdigit() else NUMW[m.group(1)]
-        if 3 <= n <= 30 and not WEEKS_SKIP.search(t[m.end():m.end() + 25]): return max(1, round(n / 4.33))
-    return None
+        if 3 <= n <= 30 and not WEEKS_SKIP.search(t[m.end():m.end() + 25]) and ok(m): return max(1, round(n / 4.33))
+    # période écrite en clair : durée calculée
+    _, n = period_of(t)
+    return n
+
+
+def cesure_of(text):
+    """Le texte parle-t-il d'un stage de césure (année de césure, gap year) ? Ne donne pas de durée."""
+    return bool(re.search(r"c[ée]sure|gap[- ]year|ann[ée]e de c[ée]sure|year[- ]out", text or '', re.I))
 
 
 def ymd(y, mo, d=1):
@@ -191,20 +359,41 @@ def find_date(t):
     return None
 
 
+def _year_for(mo):
+    """Mois sans année après « à partir de » : la prochaine occurrence de ce mois."""
+    return NOW.year if mo >= NOW.month else NOW.year + 1
+
+
 def _start_of(text, loose=True):
-    t = (text or '').lower()
-    m = re.search(r'\b(' + MONTH_RE + r')\.?\s*(?:to|à|au|-|–|/)\s*(?:' + MONTH_RE + r')\.?\s*(20\d{2})', t)  # « juillet à décembre 2027 » : le début, pas la fin
-    if m: return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
-    kw = r'(?:d[ée]but|start(?:ing|s)?(?: date)?|starting|commen\w+|à partir d[eu]|from|beginning|disponibilit[ée]|à pourvoir|pourvoir|prise de poste|intake)'
-    m = re.search(kw + r'[^.\n]{0,40}?(' + MONTH_RE + r')\.?\s*(20\d{2})', t)
-    if m: return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
-    m = re.search(kw + r'[^.\n]{0,40}?(\d{1,2})/(20\d{2})', t)
-    if m and 1 <= int(m.group(1)) <= 12: return f"{m.group(2)}-{int(m.group(1)):02d}"
-    m = re.search(kw + r'[^.\n]{0,30}?(\d{1,2})[/.](\d{1,2})[/.](20\d{2})', t)
-    if m and 1 <= int(m.group(2)) <= 12: return f"{m.group(3)}-{int(m.group(2)):02d}"
+    t = (text or '').lower().replace(' ', ' ')
+    # 1. période écrite en clair (« juillet à décembre 2027 », « du 05/01/2027 au 30/06/2027 ») : le début, pas la fin
+    s, _ = period_of(t)
+    if s: return s
+    # 2. mot-clé de début suivi d'une date ; rien entre les deux qui parle de fin ou de date limite
+    for k in START_KW.finditer(t):
+        win = t[k.end():k.end() + 45]
+        cut = re.search(r'[.\n;]', win)
+        if cut: win = win[:cut.start()]
+        pats = ((r'(' + MONTH_RE + r')\.?\s*(20\d{2})\b', lambda m: (int(m.group(2)), MONTHS[m.group(1)])),
+                (r'(20\d{2})-(\d{2})(?:-\d{2})?\b', lambda m: (int(m.group(1)), int(m.group(2)))),
+                (r'\b(\d{1,2})[/.](\d{1,2})[/.](20\d{2})\b', lambda m: (int(m.group(3)), int(m.group(2)))),
+                (r'\b(\d{1,2})/(20\d{2})\b', lambda m: (int(m.group(2)), int(m.group(1)))),
+                (r'\b(' + MONTH_RE + r')\b(?!\.?\s*\d)', lambda m: (_year_for(MONTHS[m.group(1)]), MONTHS[m.group(1)])))
+        best = None
+        for p, f in pats:
+            m = re.search(p, win)
+            if m and (best is None or m.start() < best[0].start()): best = (m, f)
+        if not best: continue
+        m, f = best
+        gap = win[:m.start()]
+        if END_GAP.search(gap) or len(gap) > 30: continue
+        y, mo = f(m)
+        if 1 <= mo <= 12: return f"{y}-{mo:02d}"
     if not loose: return None
-    m = re.search(r'\b(' + MONTH_RE + r')\.?\s+(20\d{2})', t)
-    if m: return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
+    # 3. titre : « Stage M&A – janvier 2027 » (mais pas « Clôture 15 janvier 2027 »)
+    for m in re.finditer(r'\b(' + MONTH_RE + r')\.?\s+(20\d{2})', t):
+        if re.search(r'(?:cl[ôo]tur\w*|deadline|limite|avant|before|until|jusqu\w*|apply by|\bfin|\bend|expir\w*)\W*(?:le\s+|du\s+|on\s+|au\s+)?(?:\d{1,2}(?:er|st|nd|rd|th)?\s*)?$', t[max(0, m.start() - 30):m.start()]): continue
+        return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
     return None
 
 
@@ -213,12 +402,38 @@ def start_of(text, loose=True):
     return r if r and r >= NOW.strftime('%Y-%m') else None
 
 
+def start_asap(text):
+    """« Début : dès que possible », « Start date: ASAP » (dans le titre, ou près d'un mot de début dans le texte)."""
+    t = (text or '').lower()
+    for k in START_KW.finditer(t):
+        if ASAP_RE.search(t[k.end():k.end() + 30]): return True
+    return bool(re.search(r"(?:stage|internship|intern|stagiaire|poste)\b[^.\n]{0,40}\b(?:asap|d[èe]s que possible)\b", t))
+
+
 def deadline_of(text):
     t = (text or '').lower()
     for m in re.finditer(r"date limite|deadline|closing date|apply (?:by|before)|candidatures? (?:jusqu|avant)|applications? (?:close|closing|must be received|will close)|cl[ôo]ture des candidatures|postuler avant|valable jusqu", t):
         d = find_date(t[m.end():m.end() + 70])
         if d and d >= NOW.date().isoformat(): return d
     return None
+
+
+# lieu du poste écrit dans la fiche (« Lieu : Lyon », « Location: London », « Poste basé à Paris ») ; jamais la ville du siège
+LOC_KW = re.compile(r"(?:lieu(?: du (?:poste|stage)| de travail)?|localisation|location|ville|based in|bas[ée]e?s? (?:à|a|en|au|in)|located in|workplace|site)\s*[:：\-–]?\s*", re.I)
+
+
+def location_of(text):
+    t = (text or '')[:6000]
+    for k in LOC_KW.finditer(t):
+        win = t[k.end():k.end() + 60]
+        best = None
+        for n, rx in COUNTRIES:
+            m = rx.search(win)
+            if m and (best is None or m.start() < best.start()): best = m
+        if best is not None and best.start() <= 12:
+            w = best.group(0)
+            return ' '.join(p[:1].upper() + p[1:] for p in w.split(' '))
+    return ''
 
 
 def country_of(loc):
@@ -670,7 +885,10 @@ LOC_KEYS = ['locationsText', 'location', 'locations', 'locationName', 'primaryLo
 DATE_KEYS = ['postedDate', 'datePosted', 'posted', 'postedOn', 'publishedAt', 'published_at', 'publicationDate', 'PostedDate', 'PublicationStartDate',
              'first_published', 'releasedDate', 'dateCreated', 'created_at', 'createdAt', 'creationDate', 'posted_date', 'publishDate', 'date', 'updated_at']
 DESC_KEYS = ['description', 'shortDescription', 'ShortDescriptionStr', 'descriptionTeaser', 'summary', 'jobSummary', 'teaser', 'excerpt', 'descriptionPlain', 'content']
-DEADLINE_KEYS = ['validThrough', 'closingDate', 'expirationDate', 'applicationDeadline', 'deadline', 'endDate', 'expiryDate', 'close_at']
+# « endDate » n'est PAS une date limite : c'est souvent la fin du stage (lue à part, pour calculer la durée)
+DEADLINE_KEYS = ['validThrough', 'closingDate', 'expirationDate', 'applicationDeadline', 'deadline', 'expiryDate', 'close_at', 'applyBefore', 'dateLimite', 'date_limite']
+START_KEYS = ['contractStartDate', 'start_date', 'startingDate', 'dateDebut', 'date_debut', 'beginDate', 'jobStartDate', 'desiredStartDate', 'internshipStartDate']
+END_KEYS = ['endDate', 'end_date', 'contractEndDate', 'dateFin', 'date_fin', 'internshipEndDate']
 COMMIT_KEYS = ['employmentType', 'contractType', 'contract_type', 'jobType', 'typeOfEmployment', 'type', 'jobSchedule', 'workType', 'contrat', 'typeContrat', 'category']
 KW_KEYS = ['keyword', 'keywords', 'keyWords', 'searchText', 'searchTerm', 'searchKeyword', 'search_query', 'query', 'q', 'search', 'text', 'term', 'kw', 'what', 'motsCles', 'motcle']
 PAGE_KEYS = ['page', 'pageNumber', 'page_number', 'pageIndex', 'pageNo', 'currentPage', 'pg', 'p']
@@ -776,10 +994,30 @@ def map_item(d, base, tpl=None, tkey=None):
     sk, sv = _first(d, DESC_KEYS)
     xk, xv = _first(d, DEADLINE_KEYS)
     ck, cv = _first(d, COMMIT_KEYS)
-    dl = iso(xv) if xv else None
-    return {'title': title, 'url': url, 'location': _text(lv)[:120] if lv else '', 'posted': iso(dv) if dv else None,
-            'ext': str(iv) if iv not in (None, '') else (url or title), 'desc': _text(sv)[:3000] if sv else '',
-            'deadline': dl[:10] if dl else None, 'commit': _text(cv)[:80] if cv else ''}
+    dl = _future_day(xv) if xv else None
+    _, st = _first(d, START_KEYS)
+    _, en = _first(d, END_KEYS)
+    st, en = _future_day(st) if st else None, _future_day(en) if en else None
+    out = {'title': title, 'url': url, 'location': _text(lv)[:120] if lv else '', 'posted': iso(dv) if dv else None,
+           'ext': str(iv) if iv not in (None, '') else (url or title), 'desc': _text(sv)[:3000] if sv else '',
+           'deadline': dl, 'commit': _text(cv)[:80] if cv else ''}
+    if st: out['start'] = st[:7]
+    if st and en and en > st:
+        n = _months_between(int(st[:4]), int(st[5:7]), int(en[:4]), int(en[5:7]), int(st[8:10]), int(en[8:10]))
+        if n: out['months'] = n
+    return out
+
+
+def _future_day(v):
+    """Date (AAAA-MM-JJ) d'un champ d'API, sans le contrôle « pas dans le futur » d'iso() (une date limite ou un début sont dans le futur)."""
+    s = str(v or '').strip()
+    m = re.match(r'(20\d{2})-(\d{2})-(\d{2})', s)
+    if m: return ymd(*m.groups())
+    if re.fullmatch(r'\d{10,13}', s):
+        x = int(s); x = x / 1000 if x > 1e11 else x
+        try: return dt.datetime.fromtimestamp(x, dt.timezone.utc).date().isoformat()
+        except Exception: return None
+    return find_date(s.lower()) if s else None
 
 
 def html_in_json(js, out=None, depth=0):
