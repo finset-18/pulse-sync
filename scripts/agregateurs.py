@@ -1,272 +1,311 @@
 #!/usr/bin/env python3
 """
-Agrégateurs d'offres, lus à chaque passage : Indeed, Glassdoor, Google Jobs (via JobSpy)
-et France Travail (API officielle, si FT_CLIENT_ID / FT_CLIENT_SECRET).
+Sources supplémentaires du robot de veille (lues au passage étendu, environ une fois par heure).
 
-Les recherches (métier x ville x site) tournent par tranches : chaque passage en fait PER_PASS, le cycle
-complet revient toutes les deux heures environ. Une offre d'agrégateur n'est fermée qu'après 8 jours sans
-réapparaître (veille.py). Les offres d'une structure déjà lue par sa plateforme sont écartées (doublons).
+Tout s'ajoute à l'existant : ces lignes suivent le même chemin que les agrégateurs (agregateurs.py), une offre
+n'est donc fermée qu'après 8 jours sans réapparaître et une source en panne ne ferme rien.
+
+- trackr : programmes finance UK et US (api.the-trackr.com)
+- efc : eFinancialCareers
+- wttj_search : recherche Welcome to the Jungle
+- talnet : plateformes Oleeo / tal.net (Morgan Stanley, BlackRock)
+- janestreet : Jane Street
+- simplify : liste publique SimplifyJobs sur GitHub
+- muse, arbeitnow : API publiques
+
+Lancé seul (python scripts/plus.py), le script affiche ce que chaque source renvoie et n'écrit rien.
 """
-import os, re, time
+import datetime as dt, os, re, sys, time
 from concurrent.futures import ThreadPoolExecutor
-from commun import S, clean, is_intern, FIN_TITLE, iso, _norm, country_of, load, save, official_site
-from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, AGG, is_hl
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from commun import S, clean, is_intern, iso, country_of, load
 
-PER_PASS = int(os.environ.get('AGG_PER_PASS', '30'))
-# Google et Glassdoor ne renvoient rien depuis les serveurs GitHub (Glassdoor répond 403) : leurs tours sont laissés à Indeed
-JS_SITES = set(os.environ.get('AGG_SITES', 'indeed').split(','))
-HOURS = int(os.environ.get('AGG_HOURS', str(24 * 21)))
+WORKERS = int(os.environ.get('PLUS_WORKERS', '8'))
+BUDGET = int(os.environ.get('PLUS_BUDGET_S', '420'))  # temps maximum d'une source, en secondes
+T = 20
+INTERN = 'Internship'
+TRACKR_API = 'https://api.the-trackr.com/programmes'
+# (région, secteur, saison, type)
+TRACKR = [(r, 'Finance', s, t) for s in ('2027', '2028') for r, t in (
+    ('UK', 'summer-internships'), ('UK', 'off-cycle-internships'), ('UK', 'spring-weeks'), ('UK', 'industrial-placements'),
+    ('US', 'summer-internships'), ('US', 'off-cycle-internships'), ('US', 'spring-weeks'))]
+CITY = re.compile(r"\b(paris|london|londres|frankfurt|francfort|munich|luxembourg|zurich|zürich|geneva|gen[èe]ve|brussels|bruxelles|amsterdam|dublin|madrid|milan|"
+                  r"new york|hong kong|singapore|singapour|dubai|edinburgh|manchester|birmingham|glasgow|leeds|bristol)\b", re.I)
+EFC = 'https://job-search-api.efinancialcareers.com/v1/efc/jobs/search'
+EFC_C = ('FR', 'GB', 'LU', 'CH', 'BE', 'DE', 'NL', 'IE', 'ES', 'IT', 'US', 'HK', 'SG', 'AE')
+EFC_Q = ('intern', 'stage', 'off-cycle', 'summer analyst', 'graduate')
+# eFinancialCareers publie aussi des postes hors métiers de la finance chez ses clients
+EFC_NO = re.compile(r"communication|marketing|\bhr\b|human resources|ressources humaines|recruit|talent|legal|juridique|software|developer|d[ée]veloppeur|\bit\b|cyber|design|event|[ée]v[ée]nementiel|"
+                    r"engineer|ing[ée]nieur|devops|cloud|product (?:manager|owner)|\bux\b|procurement|achats|supply chain|logisti|facilities|office manager", re.I)
+EFC_PAGES = int(os.environ.get('EFC_PAGES', '3'))
+ALGOLIA = ('https://csekhvms53-dsn.algolia.net/1/indexes/wttj_jobs_production_fr/query'
+           '?x-algolia-application-id=CSEKHVMS53&x-algolia-api-key=4bd8f6215d0cc52b26430765769e65a0')
+WTTJ_H = {'Referer': 'https://www.welcometothejungle.com/', 'Origin': 'https://www.welcometothejungle.com'}
+WTTJ_Q = ('finance', 'M&A', 'fusions acquisitions', 'private equity', 'capital investissement', 'venture capital', 'banque', "banque d'affaires",
+          'investissement', 'asset management', 'gestion de portefeuille', 'gestion de patrimoine', 'marchés financiers', 'trading', 'corporate finance',
+          'transaction services', 'analyste financier', 'audit financier', 'trésorerie', 'crédit', 'risques', 'dette', 'financement', 'immobilier investissement')
+TAL = (('morganstanley', 1, 'Morgan Stanley'), ('morganstanley', 2, 'Morgan Stanley'), ('blackrock', 1, 'BlackRock'))
+JS_CITY = {'NYC': 'New York, United States', 'LDN': 'London, United Kingdom', 'HKG': 'Hong Kong', 'SGP': 'Singapore', 'ATX': 'Austin, United States',
+           'CHI': 'Chicago, United States', 'AMS': 'Amsterdam, Netherlands'}
+SIMPLIFY = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json'
+MUSE = 'https://www.themuse.com/api/public/jobs'
 
-FR = ['stage M&A', 'stage fusions acquisitions', 'stage private equity', 'stage capital investissement', 'stage venture capital',
-      'stage corporate finance', 'stage transaction services', 'stage analyste financier', 'stage asset management',
-      'stage gestion de portefeuille', 'stage finance de marché', 'stage sales trading', 'stage structuration', 'stage dette privée',
-      'stage financement structuré', "stage banque d'affaires", 'stage investment banking', 'stage leveraged finance',
-      'stage analyste crédit', 'stage gestion de patrimoine', 'stage family office', 'stage investissement immobilier',
-      'stage infrastructure investissement', 'stage equity research', 'stage risk management', 'stage quant', 'stage trésorerie',
-      'stage restructuring', 'stage ECM DCM', 'stage relations investisseurs']
-EN = ['investment banking intern', 'M&A intern', 'private equity intern', 'venture capital intern', 'off-cycle internship finance',
-      'summer analyst', 'asset management intern', 'sales and trading intern', 'equity research intern', 'credit analyst intern',
-      'leveraged finance intern', 'restructuring intern', 'transaction services intern', 'corporate finance intern', 'quant intern',
-      'real estate investment intern', 'infrastructure investment intern', 'wealth management intern', 'fund accounting intern',
-      'risk management intern']
-# (pays Indeed/Glassdoor, lieu, requêtes, sites JobSpy)
-ZONES = [
-    ('france', 'Paris', FR, ('indeed', 'glassdoor', 'google')),
-    ('france', 'Lyon', FR[:10], ('indeed', 'google')),
-    ('uk', 'London', EN, ('indeed', 'glassdoor', 'google')),
-    ('luxembourg', 'Luxembourg', EN[:12] + ['stage finance', 'stage fonds'], ('indeed', 'google')),
-    ('switzerland', 'Zürich', EN[:12], ('indeed', 'google')),
-    ('switzerland', 'Genève', FR[:12], ('indeed', 'google')),
-    ('belgium', 'Bruxelles', FR[:10] + EN[:6], ('indeed', 'google')),
-    ('germany', 'Frankfurt', EN[:12], ('indeed', 'glassdoor', 'google')),
-    ('netherlands', 'Amsterdam', EN[:10], ('indeed', 'google')),
-    ('usa', 'New York, NY', EN, ('indeed', 'glassdoor', 'google')),
-    ('spain', 'Madrid', EN[:8], ('indeed', 'google')),
-    ('italy', 'Milan', EN[:8], ('indeed', 'google')),
-    ('ireland', 'Dublin', EN[:8], ('indeed', 'google')),
-    ('france', 'Lille', FR[:10], ('indeed',)),
-    ('france', 'Bordeaux', FR[:6], ('indeed',)),
-    ('france', 'Nantes', FR[:6], ('indeed',)),
-    ('france', 'Marseille', FR[:6], ('indeed',)),
-    ('france', 'France', FR, ('indeed',)),
-    ('hong kong', 'Hong Kong', EN[:10], ('indeed',)),
-    ('singapore', 'Singapore', EN[:10], ('indeed',)),
-    ('united arab emirates', 'Dubai', EN[:8], ('indeed',)),
-]
-FT_Q = ['stage finance', 'stage analyste financier', 'stage fusions acquisitions', 'stage private equity', 'stage banque',
-        'stage gestion actifs', 'stage audit financier', 'stage investissement', 'stage marchés financiers', 'stage crédit']
-def tasks():
+
+def row(src, company, title, url, location='', posted=None, ext=None, desc='', commit=INTERN, trust=False, logo='', csite='', start=None):
+    return {'title': clean(title or ''), 'company': clean(company or ''), 'csite': csite if str(csite).startswith('http') else '', 'url': url, 'location': clean(location or '')[:120], 'posted': posted,
+            'ext': src + ':' + str(ext or url), 'desc': clean(desc or '')[:8000], 'commit': commit, 'src': src, 'trust': trust,
+            'logo': logo if str(logo).startswith('https://') else '', 'start': start}
+
+
+def trackr_location(p):
     out = []
-    for country, loc, qs, sites in ZONES:
-        for q in qs:
-            for s in sites:
-                if s in JS_SITES:
-                    out.append(('js', s, country, loc, q))
-    if os.environ.get('FT_CLIENT_ID') and os.environ.get('FT_CLIENT_SECRET'):
-        out += [('ft', 'francetravail', '', '', q) for q in FT_Q]
-    # sites mélangés pour qu'une tranche ne frappe pas un seul site d'affilée
-    return sorted(out, key=lambda t: (_norm(t[4] + t[3]), t[1]))
+    for loc in p.get('locations') or []:
+        a = [x.strip() for x in str(loc).split('|') if x.strip()]
+        if a:
+            country = {'US': 'United States', 'UK': 'United Kingdom', 'GB': 'United Kingdom'}.get(a[0], a[0])
+            out.append(a[-1] + ', ' + country if len(a) > 1 else country)
+    if out:
+        return ' / '.join(out[:3])
+    m = CITY.search(p.get('name') or '')
+    if m:
+        return m.group(1)
+    return {'UK': 'United Kingdom', 'US': 'United States'}.get(p.get('region'), '')
 
 
-def _s(v):
-    if v is None or (isinstance(v, float) and v != v):
-        return ''
-    if isinstance(v, (list, tuple)):
-        return ', '.join(_s(x) for x in v if _s(x))
-    if isinstance(v, dict):
-        return ', '.join(_s(x) for x in v.values() if isinstance(x, str) and x)
-    return clean(str(v))
+def trackr_open(p, today):
+    if re.search(r'clos|expired|not.?open|upcoming', str(p.get('status') or ''), re.I):
+        return False
+    c = str(p.get('closingDate') or '')[:10]
+    return not (re.match(r'20\d\d-\d\d-\d\d', c) and c < today)
 
 
-def _date(v):
-    s = _s(v)
-    return iso(s[:10]) if re.match(r'20\d{2}-\d{2}-\d{2}', s) else None
-
-
-def run_jobspy(site, country, loc, q):
-    from jobspy import scrape_jobs
-    kw = dict(site_name=[site], search_term=q, location=loc, results_wanted=50, hours_old=HOURS, country_indeed=country,
-              description_format='markdown', verbose=0)
-    if site == 'google':
-        kw['google_search_term'] = f'{q} {loc} since last month'
-    df = scrape_jobs(**kw)
-    out = []
-    for r in df.to_dict('records'):
-        u = _s(r.get('job_url'))
-        if not u.startswith('http'):
-            continue
-        out.append({'title': _s(r.get('title')), 'company': _s(r.get('company')), 'url': u, 'location': re.sub(r',\s*[A-Z]{1,2}\d{1,2}\b', '', _s(r.get('location')))[:120],
-                    'csite': _s(r.get('company_url_direct')) if _s(r.get('company_url_direct')).startswith('http') else '',
-                    'logo': _s(r.get('company_logo')) if _s(r.get('company_logo')).startswith('https://') else '',
-                    'posted': _date(r.get('date_posted')), 'ext': site + ':' + (_s(r.get('id')) or u),
-                    'desc': _s(r.get('description'))[:4000], 'commit': _s(r.get('job_type')), 'src': site})
+def s_trackr():
+    out, today = [], dt.date.today().isoformat()
+    for region, industry, season, kind in TRACKR:
+        r = S.get(TRACKR_API, params={'region': region, 'industry': industry, 'season': season, 'type': kind}, timeout=45)
+        r.raise_for_status()
+        for p in r.json().get('programmes') or []:
+            u = p.get('url') or ''
+            if not u.startswith('http') or not trackr_open(p, today):
+                continue
+            co = p.get('company')
+            name = (co.get('name') if isinstance(co, dict) else co) or str(p.get('companyId') or '').replace('-', ' ').title()
+            info = co if isinstance(co, dict) else {}
+            out.append(row('trackr', name, p.get('name'), u, trackr_location(p), iso(p.get('openingDate')), p.get('id'), trust=True,
+                           logo=info.get('logo') or info.get('logoUrl') or info.get('imageUrl') or '', csite=info.get('website') or info.get('url') or ''))
     return out
 
 
-_FT = {}
-
-
-def ft_token():
-    if _FT.get('t') and _FT['exp'] > time.time():
-        return _FT['t']
-    r = S.post('https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire',
-               data={'grant_type': 'client_credentials', 'client_id': os.environ['FT_CLIENT_ID'],
-                     'client_secret': os.environ['FT_CLIENT_SECRET'], 'scope': 'api_offresdemploiv2 o2dsoffre'}, timeout=20)
+def efc_one(a):
+    country, q, page = a
+    r = S.get(EFC, params={'q': q, 'countryCode2': country, 'page': page, 'pageSize': 100, 'language': 'en'}, timeout=T)
     r.raise_for_status()
     js = r.json()
-    _FT.update(t=js['access_token'], exp=time.time() + int(js.get('expires_in', 1000)) - 60)
-    return _FT['t']
-
-
-def run_ft(q):
-    r = S.get('https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search',
-              params={'motsCles': q, 'range': '0-149', 'publieeDepuis': 31}, headers={'Authorization': 'Bearer ' + ft_token(),
-                                                                                       'Accept': 'application/json'}, timeout=30)
-    if r.status_code == 204:
-        return []
-    r.raise_for_status()
-    out = []
-    for j in r.json().get('resultats') or []:
-        oid = j.get('id')
-        if not oid:
+    res = []
+    for j in js.get('data') or []:
+        u, t = j.get('detailsPageUrl') or '', j.get('title') or ''
+        text = t + ' ' + (j.get('summary') or '')[:300]
+        if not u or EFC_NO.search(t) or not (is_intern(t) or re.search(r'contract type:? *internship|\bstage de\b|\bstagiaire\b', text, re.I)):
             continue
-        out.append({'title': _s(j.get('intitule')), 'company': _s((j.get('entreprise') or {}).get('nom')),
-                    'url': f'https://candidat.francetravail.fr/offres/recherche/detail/{oid}',
-                    'location': _s((j.get('lieuTravail') or {}).get('libelle')) + ', France', 'posted': iso(j.get('dateCreation')),
-                    'ext': 'ft:' + oid, 'desc': _s(j.get('description'))[:4000],
-                    'commit': _s(j.get('typeContratLibelle')) + ' ' + _s(j.get('natureContrat')), 'src': 'francetravail'})
+        res.append(row('efc', j.get('companyName') or j.get('clientBrandName'), t, 'https://www.efinancialcareers.com' + u,
+                       (j.get('jobLocation') or {}).get('displayName'), iso(j.get('postedDate')), j.get('id'), j.get('description') or j.get('summary'), trust=True,
+                       logo=j.get('companyLogoUrl') or j.get('jobAdvertLogoUrl') or ''))
+    return res
+
+
+def s_efc():
+    tasks = [(c, q, p) for c in EFC_C for q in EFC_Q for p in range(1, EFC_PAGES + 1)]
+    out = []
+    t0 = time.time()
+    with ThreadPoolExecutor(WORKERS) as ex:
+        for got in ex.map(lambda a: _safe(efc_one, a, t0), tasks):
+            out += got
     return out
 
 
-WD = 'https://www.wikidata.org/w/api.php'
-WD_MAX = int(os.environ.get('WD_MAX', '250'))  # recherches de site par passage
-
-
-def domain_for(name, cache):
-    """Site officiel d'une entreprise d'après Wikidata (propriété P856), pour afficher son logo."""
-    k = _norm(name)
-    if k in cache:
-        return cache[k]
-    site = ''
+def _safe(f, a, t0):
+    if time.time() - t0 > BUDGET:
+        return []
     try:
-        h = {'User-Agent': 'pulse-sync/1.0 (logos)'}
-        r = S.get(WD, params={'action': 'wbsearchentities', 'search': name, 'language': 'fr', 'uselang': 'fr', 'type': 'item',
-                              'limit': 3, 'format': 'json'}, headers=h, timeout=10).json()
-        ids = [x['id'] for x in r.get('search', [])]
-        if ids:
-            e = S.get(WD, params={'action': 'wbgetentities', 'ids': '|'.join(ids), 'props': 'claims', 'format': 'json'},
-                      headers=h, timeout=10).json().get('entities', {})
-            for i in ids:
-                cl = (e.get(i, {}).get('claims', {}).get('P856') or [])
-                if cl:
-                    site = str(cl[0].get('mainsnak', {}).get('datavalue', {}).get('value') or '')
-                    break
+        return f(a)
     except Exception:
-        return ''
-    cache[k] = site if site.startswith('http') else ''
-    return cache[k]
+        return []
 
 
-def one(t):
-    kind, site, country, loc, q = t
-    try:
-        if kind == 'js':
-            return site, run_jobspy(site, country, loc, q), None
-        return site, run_ft(q), None
-    except Exception as e:
-        return site, [], str(e)[:80]
+def wttj_one(q):
+    res = []
+    for page in range(0, 5):
+        r = S.post(ALGOLIA, json={'query': q, 'hitsPerPage': 200, 'page': page, 'facetFilters': [['contract_type:internship', 'contract_type:apprenticeship', 'contract_type:vie']]},
+                   headers=WTTJ_H, timeout=T)
+        r.raise_for_status()
+        js = r.json()
+        for h in js.get('hits') or []:
+            org = h.get('organization') or {}
+            if not org.get('slug') or not h.get('slug'):
+                continue
+            off = (h.get('offices') or [{}])[0] or {}
+            ct = h.get('contract_type') or ''
+            logo = org.get('logo') or {}
+            logo = (logo.get('url') if isinstance(logo, dict) else logo) or ''
+            months = h.get('contract_duration_maximum') or h.get('contract_duration_minimum')
+            text = ' '.join(str(x) for x in (h.get('summary'), h.get('key_missions'), h.get('profile')) if x) + (f' Durée {months} mois.' if months else '')
+            start = str(h.get('start_date') or h.get('starts_at') or '')[:7]
+            res.append(row('wttj_search', org.get('name'), h.get('name'), f"https://www.welcometothejungle.com/fr/companies/{org['slug']}/jobs/{h['slug']}",
+                           ', '.join(x for x in (off.get('city'), off.get('country')) if x), iso(h.get('published_at')), h.get('slug'), text,
+                           'Alternance' if ct == 'apprenticeship' else 'VIE' if ct == 'vie' else INTERN, logo=logo,
+                           csite=org.get('website') or org.get('website_url') or '', start=start if re.match(r'20\d\d-\d\d$', start) else None))
+        if page + 1 >= (js.get('nbPages') or 0):
+            break
+    return res
 
 
-def run_aggregators(structs, recettes, run_no, log=print):
-    """Résultats {id: (offres brutes, infos)} + pseudo-structures des sociétés hors liste."""
-    try:
-        import jobspy  # noqa
-    except Exception:
-        log('agrégateurs : JobSpy indisponible')
-    all_t = tasks()
-    n_slices = max(1, -(-len(all_t) // PER_PASS))
-    mine = [t for i, t in enumerate(all_t) if i % n_slices == run_no % n_slices]
-    rows, seen, stats = [], set(), {}
-    # un fil par site : jamais deux requêtes en même temps sur le même site
-    by_site = {}
-    for t in mine:
-        by_site.setdefault(t[1], []).append(t)
+def s_wttj():
+    out = []
+    t0 = time.time()
+    with ThreadPoolExecutor(4) as ex:
+        for got in ex.map(lambda q: _safe(wttj_one, q, t0), WTTJ_Q):
+            out += got
+    return out
 
-    def lane(ts):
-        res = []
-        for t in ts:
-            res.append(one(t))
-            time.sleep(1.5)
-        return res
-    with ThreadPoolExecutor(max(1, len(by_site))) as ex:
-        for res in ex.map(lane, by_site.values()):
-            for site, got, err in res:
-                st = stats.setdefault(site, [0, 0, 0])
-                st[0 if err is None else 1] += 1
-                for x in got:
-                    if x['url'] in seen:
-                        continue
-                    seen.add(x['url'])
-                    rows.append(x)
-                st[2] += len(got)
-    log('agrégateurs : tranche ' + str(run_no % n_slices + 1) + '/' + str(n_slices) + ' : ' +
-        ', '.join(f'{k} {v[0]} ok / {v[1]} échecs / {v[2]} annonces' for k, v in sorted(stats.items())))
 
-    if os.environ.get('EXTRA') == '1':
+TAL_A = re.compile(r'<a\b[^>]*href="([^"]*/opp/(\d+)[^"]*)"[^>]*>(.*?)</a>(.*?)(?=</tr>|<a\b[^>]*/opp/|$)', re.I | re.S)
+TAL_NEXT = re.compile(r'href="([^"]*[?&](?:amp;)?start=(\d+)[^"]*)"', re.I)
+
+
+def tal_parse(html, base):
+    """(offres [(id, titre, lieu, url)], adresses des pages suivantes {start: url})"""
+    res, seen = [], set()
+    for m in TAL_A.finditer(html):
+        href, oid, title, tail = m.groups()
+        title = clean(re.sub(r'<[^>]+>', ' ', title))
+        if not title or oid in seen:
+            continue
+        seen.add(oid)
+        cells = [clean(re.sub(r'<[^>]+>', ' ', c)) for c in re.findall(r'<td\b[^>]*>(.*?)</td>', tail, re.I | re.S)]
+        res.append((oid, title, next((c for c in cells if c), ''), href.replace('&amp;', '&')))
+    pages = {int(s): h.replace('&amp;', '&') for h, s in TAL_NEXT.findall(html)}
+    return res, pages
+
+
+def tal_board(client, board, company, trust=True):
+    from urllib.parse import urljoin
+    url, out, done = f'https://{client}.tal.net/candidate/jobboard/vacancy/{board}/adv/', [], set()
+    for _ in range(40):
+        r = S.get(url, timeout=T)
+        r.raise_for_status()
+        got, pages = tal_parse(r.text, r.url)
+        for oid, title, loc, href in got:
+            if oid not in done:
+                done.add(oid)
+                out.append(row('talnet', company, title, urljoin(r.url, href).split('?')[0], loc, None, client + ':' + oid, commit='', trust=trust))
+        nxt = sorted(s for s in pages if s > (len(done) - len(got)))
+        if not got or not nxt:
+            break
+        url = urljoin(r.url, pages[nxt[0]])
+    return out
+
+
+def s_talnet():
+    """Comptes tal.net connus, plus ceux récoltés chaque semaine par comptes.py. Un compte protégé renvoie 0 offre."""
+    boards = list(TAL)
+    for client, name in ((load('comptes.json') or {}).get('tal') or {}).items():
+        if not any(b[0] == client for b in TAL):
+            boards += [(client, n, name) for n in (1, 2)]
+    out = []
+    for client, board, company in boards:
         try:
-            from plus import plus_rows
-            for x in plus_rows(log):
-                if x['url'] not in seen:
-                    seen.add(x['url'])
-                    rows.append(x)
-        except Exception as e:
-            log('agr+ : ' + str(e)[:120])
+            out += tal_board(client, board, company, any(b[0] == client for b in TAL))  # comptes récoltés : intitulé financier exigé
+        except Exception:
+            pass
+    return out
 
-    idx = name_index(structs)
-    fast = {cid for cid, r in recettes.items() if any(m.get('m') in FAST for m in (r.get('methods') or []))}
-    # structures dont la plateforme donne vraiment des offres : les annonces d'agrégateurs seraient des doublons.
-    # Les autres (page lue mais 0 offre, comme Goldman Sachs) gardent les offres trouvées par les agrégateurs.
-    offs = (load('offers.json') or {}).get('offers') or []
-    served = {o['company_id'] for o in offs if o.get('status') == 'open' and o.get('via') not in AGG
-              and o.get('via') not in ('html', 'watch', 'page', 'render', 'api')}
-    results, pseudo, dedup = {}, {}, set()
-    for x in rows:
-        title, comp, csite = x['title'], x.pop('company', ''), x.pop('csite', '')
-        trust = x.get('trust')  # source 100 % finance : l'intitulé n'a pas à contenir un mot-clé financier
-        if not title or not comp or not (trust or is_intern(title) or x.get('commit')) or not (trust or FIN_TITLE.search(title + ' ' + comp)):
+
+def s_janestreet():
+    out = []
+    for j in S.get('https://www.janestreet.com/jobs/main.json', timeout=T).json():
+        if 'intern' not in str(j.get('availability') or '').lower():
             continue
-        cid = match_name(comp, idx)
-        if cid and cid in fast and cid in served:
-            continue  # structure déjà lue par sa plateforme ou son site : ce serait un doublon
-        if not cid:
-            if not trust and not HL_TITLE.search(title):
-                continue
-            key = _norm(LEGAL.sub(' ', comp)) or _norm(comp)
-            if len(key) < 3:
-                continue
-            cid = 'h_in_' + key[:40]
-            ps = pseudo.setdefault(cid, {'id': cid, 'name': comp[:80], 'fam': '', 'city': '', 'site': '', 'url': '', 'hors_liste': True})
-            if csite and not ps['site']:
-                # site de l'entreprise (pour son logo), jamais celui de l'agrégateur ni d'une plateforme de recrutement
-                ps['site'] = official_site({'site': csite})
-        dk = (cid, _norm(title), country_of(x.get('location') or ''))
-        if dk in dedup:
-            continue  # même offre vue sur plusieurs agrégateurs
-        dedup.add(dk)
-        src = x['src']
-        raw, info = results.setdefault(cid, ([], {'id': cid, 'ok': True, 'via': src, 'err': '', 'ran': [], 'complete': False, 'partial': []}))
-        if src not in info['ran']:
-            info['ran'].append(src)
-            info['partial'].append(src)
-        raw.append(x)
-    # sociétés hors liste sans site : on cherche leur site officiel (logo) ; le cache évite de refaire les mêmes recherches
-    cache, n = load('domaines.json') or {}, 0
-    for ps in pseudo.values():
-        if ps['site'] or n >= WD_MAX:
+        out.append(row('janestreet', 'Jane Street', str(j.get('position')) + ' Intern', f"https://www.janestreet.com/join-jane-street/position/{j.get('id')}/",
+                       JS_CITY.get(j.get('city'), j.get('city')), None, j.get('id'), j.get('overview'), trust=True))
+    return out
+
+
+def s_simplify():
+    out = []
+    for j in S.get(SIMPLIFY, timeout=60).json():
+        if not j.get('active') or not j.get('is_visible', True) or not str(j.get('url') or '').startswith('http'):
             continue
-        if _norm(ps['name']) not in cache:
-            n += 1
-        ps['site'] = domain_for(ps['name'], cache)
-    if n:
-        save('domaines.json', cache)
-    return results, list(pseudo.values())
+        locs = [str(x) for x in j.get('locations') or []]
+        loc = next((x for x in locs if country_of(x)), locs[0] if locs else '')
+        out.append(row('simplify', j.get('company_name'), j.get('title'), j['url'], loc, iso(j.get('date_posted')), j.get('id'),
+                       trust=str(j.get('category')) in ('Quant', 'Quantitative Finance'), csite=j.get('company_url') or ''))
+    return out
+
+
+def s_muse():
+    out = []
+    for cat in ('Accounting and Finance', 'Business Operations', 'Sales'):
+        for page in range(0, 20):
+            r = S.get(MUSE, params={'level': 'Internship', 'category': cat, 'page': page}, timeout=T)
+            r.raise_for_status()
+            js = r.json()
+            for j in js.get('results') or []:
+                u = (j.get('refs') or {}).get('landing_page')
+                if u:
+                    out.append(row('muse', (j.get('company') or {}).get('name'), j.get('name'), u, ((j.get('locations') or [{}])[0] or {}).get('name'),
+                                   iso(j.get('publication_date')), j.get('id')))
+            if page + 1 >= (js.get('page_count') or 0):
+                break
+    return out
+
+
+def s_arbeitnow():
+    out = []
+    for page in range(1, 7):
+        r = S.get('https://www.arbeitnow.com/api/job-board-api', params={'page': page}, timeout=T)
+        r.raise_for_status()
+        lst = r.json().get('data') or []
+        for j in lst:
+            t = j.get('title') or ''
+            if is_intern(t) or re.search('intern', ' '.join(j.get('job_types') or []), re.I):
+                out.append(row('arbeitnow', j.get('company_name'), t, j.get('url'), j.get('location'), iso(j.get('created_at')), j.get('slug'), j.get('description')))
+        if not lst:
+            break
+    return out
+
+
+SOURCES = {'trackr': s_trackr, 'efc': s_efc, 'wttj': s_wttj, 'talnet': s_talnet, 'janestreet': s_janestreet,
+           'simplify': s_simplify, 'muse': s_muse, 'arbeitnow': s_arbeitnow}
+
+
+def plus_rows(log=print):
+    """Toutes les annonces des sources supplémentaires. Une source en panne est signalée et ignorée."""
+    rows, stats = [], {}
+
+    def run(item):
+        name, f = item
+        try:
+            return name, f(), None
+        except Exception as e:
+            return name, [], str(e)[:80]
+    with ThreadPoolExecutor(len(SOURCES)) as ex:
+        for name, got, err in ex.map(run, SOURCES.items()):
+            stats[name] = err or len(got)
+            rows += [x for x in got if x['title'] and x['company'] and x['url']]
+    log('agr+ : ' + ', '.join(f'{k} {v}' for k, v in stats.items()))
+    return rows
+
+
+if __name__ == '__main__':
+    from collections import Counter
+    from commun import keep_offer
+    from sources import HL_TITLE
+    rows = plus_rows()
+    seen = {x['url'] for x in rows}
+    print('annonces uniques', len(seen), flush=True)
+    for src, n in Counter(x['src'] for x in rows).most_common():
+        lst = [x for x in rows if x['src'] == src]
+        ok = [x for x in lst if keep_offer(x) and (x['trust'] or HL_TITLE.search(x['title']))]
+        print(f'{src} : {n} lues, {len(ok)} gardées, {sum(1 for x in ok if country_of(x["location"]) == "France")} en France, {sum(1 for x in ok if not country_of(x["location"]))} sans pays', flush=True)
+        for x in ok[:3]:
+            print('   ', x['company'][:30], '|', x['title'][:70], '|', x['location'][:40], flush=True)
