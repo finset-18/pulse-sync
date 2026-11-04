@@ -385,17 +385,27 @@ async def discover(browser, c, seeds):
     return rec
 
 
+PRIO_DAYS = int(os.environ.get('PRIO_DAYS', '3'))
+
+
+def age_days(r):
+    try: return (NOW - dt.datetime.fromisoformat(r['checked'].replace('Z', '+00:00'))).days
+    except Exception: return 10 ** 6
+
+
 def todo_list(structs, recettes, revoir):
     out = []
+    prio = prio_ids(structs, recettes)
     for i, c in enumerate(sorted(structs, key=lambda x: x['id'])):
         if i % SHARDS != SHARD: continue
         if ONLY and c['id'] not in ONLY: continue
         r = recettes.get(c['id'])
+        if c['id'] in prio and age_days(r or {}) >= PRIO_DAYS: out.append((-1, c)); continue  # grands noms sans lecture fiable : en tête de file, tous les 3 jours, même bloqués
         if MODE == 'all' or ONLY or not r: out.append((0, c)); continue
         if MODE == 'retry':   # deuxième essai : sites en erreur (délai, coupure) ou sans méthode ; les sites qui bloquent les robots restent en Alertes
             if not r.get('blocked') and (r.get('err') or not r.get('methods')): out.append((0, c))
             continue
-        age = (NOW - dt.datetime.fromisoformat(r['checked'].replace('Z', '+00:00'))).days
+        age = age_days(r)
         ms = {m['m'] for m in r.get('methods', [])}
         if c['id'] in revoir: out.append((1, c))
         elif (not ms or ms <= {'watch', 'wttj'}) and age >= 14: out.append((2, c))   # rien d'automatique : on regarde toutes les 2 semaines
