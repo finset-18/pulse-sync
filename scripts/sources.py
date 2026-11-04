@@ -40,6 +40,22 @@ def merge_annuaire(recettes, ann):
     return out
 
 
+def merge_dedies(recettes, ded):
+    """Recettes dédiées (data/dedies.json, écrites à la main, même format de méthode que recettes.json) : placées en tête, sans doublon.
+    Accepte {id: [méthodes]} comme annuaire.json ou {id: {methods: [...]}} comme recettes.json."""
+    out = dict(recettes)
+    for cid, v in (ded or {}).items() if isinstance(ded, dict) else ():
+        meths = v.get('methods') if isinstance(v, dict) else v
+        if not isinstance(meths, list): continue
+        r = dict(out.get(cid) or {'id': cid, 'methods': []})
+        cur = list(r.get('methods') or [])
+        add = [m for m in meths if isinstance(m, dict) and m.get('m') and m not in cur]
+        if add:
+            r['methods'] = add + cur
+            out[cid] = r
+    return out
+
+
 def home_countries(c):
     """Pays d'une structure d'après son nom et sa ville (« Baker Tilly France » -> France)."""
     t = (c.get('name') or '') + ' ' + (c.get('city') or '')
