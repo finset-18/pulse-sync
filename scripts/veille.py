@@ -13,15 +13,30 @@ robot de veille des offres de stage.
 4. écrit data/offers.json, data/meta.json (bilan lu par le site) et data/state.json
 Les structures sans recette (pas encore découvertes) sont lues comme avant (page carrières + plateformes).
 """
-import json, re, os, sys, time, hashlib, asyncio, datetime as dt
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json, re, os, sys, time, hashlib, asyncio, statistics, threading, datetime as dt
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from commun import *  # noqa
+from taxonomie import metier_of, front_of, famx_of, langs_of, contact_of, norm as tnorm
 
 SCHEMA = 2
+ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
-MAX_DETAILS = int(os.environ.get('MAX_DETAILS', '400'))
+MAX_DETAILS = int(os.environ.get('MAX_DETAILS', '800'))
+FAST_BUDGET_S = float(os.environ.get('FAST_BUDGET_S', '230'))  # lecture des structures
+SCAN_MAX_S = float(os.environ.get('SCAN_MAX_S', '0')) or min(60.0, FAST_BUDGET_S / 3)  # délai maximal d'une structure : au-delà son fil est rendu aux autres
+CUT_MAX = int(os.environ.get('CUT_MAX', '3'))  # coupures de suite avant de passer au job lent
+BEHIND_MAX = float(os.environ.get('BEHIND_MAX', '0.25'))  # part de structures non lues au-delà de laquelle le passage est dégradé
+DETAILS_BUDGET_S = float(os.environ.get('DETAILS_BUDGET_S', '35'))  # fiches détaillées, budget à part
+LINKS_BUDGET_S = float(os.environ.get('LINKS_BUDGET_S', '20'))  # liens des agrégateurs, budget à part
+YEAR_CLOSE = os.environ.get('YEAR_CLOSE', '1') == '1'  # 0 : plus de fermeture « année passée », les fermetures récentes sont annulées
+YEAR_REVERT_DAYS = int(os.environ.get('YEAR_REVERT_DAYS', '7'))  # une fermeture « année passée » que la règle ne confirme plus est annulée pendant ce délai
+DL_REOPEN_DAYS = int(os.environ.get('DL_REOPEN_DAYS', '3'))  # offre fermée par sa date limite, revue en ligne sur ce nombre de jours : la date était mal lue
+LINK_MAX = int(os.environ.get('LINK_MAX', '120'))  # liens d'agrégateurs testés par passage
+LINK_DAYS = int(os.environ.get('LINK_DAYS', '3'))  # un lien n'est retesté qu'après ce délai
+LITE_CLOSED_DAYS = int(os.environ.get('LITE_CLOSED_DAYS', '30'))  # offres fermées gardées dans offers-lite.json
+SWEEP_LENT_H = float(os.environ.get('SWEEP_LENT_H', '48'))  # une source sans cycle complet depuis ce délai ne ferme rien pour « non revue »
 RENDER = os.environ.get('RENDER', '') == '1'
 EXTRA = os.environ.get('EXTRA', '') == '1'  # passage étendu : sociétés hors liste
 AGGR = os.environ.get('AGGR', '1') == '1'  # agrégateurs (Indeed, Glassdoor, Google, France Travail), par tranches à chaque passage
@@ -31,6 +46,7 @@ T0 = time.time()
 FAST = ('ats', 'api', 'html', 'wttj')
 CLOSED_KEEP_DAYS = int(os.environ.get('CLOSED_KEEP_DAYS', '30'))  # offres fermées gardées (statut « closed ») avant d'être retirées du fichier
 ERR_RATE_MAX = float(os.environ.get('ERR_RATE_MAX', '0.5'))  # part de sources en échec au-delà de laquelle le passage est « dégradé »
+LEFTOVER = [False]  # des lectures tournent encore à la fin du budget : le processus sort sans les attendre
 ERRS = []  # erreurs d'une étape du passage (l'étape est sautée, les offres déjà captées sont quand même enregistrées)
 
 
@@ -68,9 +84,11 @@ def cvc_ok(title):
 
 
 def title_ok(c, x):
-    """Intitulé gardé pour cette structure ? (les sources « trust », 100 % finance, ne sont jamais filtrées)"""
-    if x.get('trust'): return True
+    """Intitulé gardé pour cette structure ? (les sources « trust », 100 % finance, échappent à l'intitulé finance exigé,
+    pas au filtre hors finance ; le réseau bancaire de détail est écarté partout)"""
     t = x.get('title') or ''
+    if reseau_detail(t): return False
+    if x.get('trust'): return not hors_finance(t)
     g = group_kind(c)
     if g == 'strict': return cvc_ok(t)
     if g == 'light': return not hors_finance(t)
@@ -83,9 +101,11 @@ GRACE = (NOW - dt.timedelta(hours=36)).isoformat().replace('+00:00', 'Z')
 STALE = (NOW - dt.timedelta(days=6)).isoformat().replace('+00:00', 'Z')  # source douteuse depuis 6 jours : fermée
 FRESH = (NOW - dt.timedelta(hours=3)).isoformat().replace('+00:00', 'Z')  # last_seen réécrit au plus toutes les 3 h (fichier stable entre deux passages)
 SWEEP = (NOW - dt.timedelta(days=8)).isoformat().replace('+00:00', 'Z')  # offres d'agrégateurs ou hors liste non revues depuis 8 jours : fermées
-from sources import AGG, PLUS, HL_TITLE, country_ok, is_hl, merge_annuaire, hors_liste, merge_results, home_countries
+from commun import STOP_TOK
+from sources import AGG, PLUS, HL_TITLE, LEGAL, country_ok, is_hl, merge_annuaire, merge_dedies, hors_liste, merge_results, home_countries
 from agregateurs import run_aggregators
 from commun import _norm
+import ia
 
 
 def reread_key(o, v):
@@ -198,13 +218,15 @@ def scan(c, rec, seeds):
             raw += got; info['ok'] = True; info['ran'].append(m_key(m)); info['via'] = info['via'] or m_key(m)
         except Exception as e:
             info['err'] = (m_key(m) + ': ' + str(e))[:100]
+            info.setdefault('partial', []).append(m_key(m))  # recette à plusieurs pages : une page en panne, la source n'a pas été lue en entier
     if not meths: info['skip'] = True
     elif not info['ran'] and not info['complete']: info['skip'] = True  # que du rendu : traité au passage quotidien
     return raw, info
 
 
-async def render_all(items):
-    """Passage quotidien : ouvre dans un navigateur les sites qui n'affichent leurs offres qu'avec JavaScript."""
+async def render_all(items, budget=None):
+    """Passage quotidien : ouvre dans un navigateur les sites qui n'affichent leurs offres qu'avec JavaScript. Budget en secondes : le reste attend."""
+    t0 = time.time()
     from playwright.async_api import async_playwright
     from decouverte import visit, launch, new_ctx
     res = {}
@@ -214,6 +236,7 @@ async def render_all(items):
 
         async def one(c, m):
             async with sem:
+                if budget and time.time() - t0 > budget: return
                 ctx = await new_ctx(browser)
                 try:
                     v = await asyncio.wait_for(visit(ctx, m['url']), timeout=70)
@@ -249,6 +272,266 @@ def load_offers():
     return doc or {}
 
 
+def merge_render(results, rr):
+    """Ajoute aux résultats les pages lues au navigateur ({id: [(offres, erreur), ...]})."""
+    for cid, lst in rr.items():
+        raw, info = results.get(cid) or ([], {'id': cid, 'ok': False, 'via': '', 'err': '', 'ran': [], 'complete': True})
+        info.pop('skip', None)
+        for got, e in lst:
+            if e is None:
+                raw += got; info['ok'] = True; info['ran'].append('render'); info['via'] = info['via'] or 'render'
+            else:
+                info['err'] = 'rendu: ' + e
+        info['complete'] = True
+        results[cid] = (raw, info)
+
+
+def consume_lent(state, results, structs, byid):
+    """Reprend data/lent.json (hors liste, sources plus, rendu navigateur) s'il est nouveau. Renvoie sa date, ou None."""
+    doc = load('lent.json')
+    if not isinstance(doc, dict) or not doc.get('updated') or doc['updated'] == state.get('lent_seen'): return None
+    pseudo = [p for p in doc.get('structs') or [] if isinstance(p, dict) and p.get('id') and p.get('name')]
+    ids = set(byid) | {p['id'] for p in pseudo}
+    agg = {cid: (v[0], v[1]) for cid, v in (doc.get('results') or {}).items()
+           if cid in ids and isinstance(v, list) and len(v) == 2 and isinstance(v[0], list) and isinstance(v[1], dict)}
+    for i in agg.values():
+        i[1].setdefault('ran', []); i[1].setdefault('ok', False); i[1].setdefault('via', ''); i[1].setdefault('err', ''); i[1].setdefault('complete', True)
+    rr = {cid: [(g, e) for g, e in v] for cid, v in (doc.get('render') or {}).items() if cid in ids}
+    cycles = doc.get('cycles')
+    for p in pseudo:
+        if p['id'] not in byid:
+            structs.append(p); byid[p['id']] = p
+    merge_results(results, agg)
+    merge_render(results, rr)
+    dom = doc.get('domaines')
+    if isinstance(dom, dict) and dom:
+        cache = load('domaines.json') or {}
+        cache.update(dom)
+        save('domaines.json', cache)
+    state['lent_seen'] = doc['updated']
+    state['last_full'] = doc['updated']
+    if isinstance(cycles, dict): state.setdefault('cycles', {}).update(cycles)  # sources réellement lues en entier, avec leur date
+    cut, only = state.get('cut') or {}, set(state.get('lent_only') or [])
+    for cid in doc.get('fast_ok') or []:  # redevenue rapide au passage lent : retour dans le rapide
+        cut.pop(cid, None); only.discard(cid)
+    state['cut'], state['lent_only'] = cut, sorted(only)
+    return doc['updated']
+
+
+def hours_since(ts):
+    try: return (NOW - dt.datetime.fromisoformat(str(ts).replace('Z', '+00:00'))).total_seconds() / 3600
+    except Exception: return 1e9
+
+
+def set_country(o, c):
+    """Pays du poste d'après son lieu ; sinon pays du siège, signalé comme tel."""
+    if o.get('country_hq') and not c and not country_of(o.get('location') or ''): return  # structure pas chargée à ce passage : pays du siège gardé
+    o['country'] = country_of(o.get('location') or '')
+    o.pop('country_hq', None)
+    if not o['country']:
+        hc = home_countries(c) if c else set()
+        if len(hc) == 1: o['country'] = next(iter(hc)); o['country_hq'] = 1
+
+
+def classify(o, text=''):
+    """Champs déduits : type de structure, métier, front office, langues, e-mail de recrutement."""
+    fx = famx_of(o)
+    if fx: o['famx'] = fx
+    else: o.pop('famx', None)
+    if o.get('metier_src') != 'ia':
+        o['metier'] = metier_of(o)
+        if front_of(o): o['front'] = 1
+        else: o.pop('front', None)
+    if text or not o.get('langs'):
+        lg = langs_of(o.get('title'), text)
+        if lg: o['langs'] = lg
+    ct = contact_of(text)
+    if ct: o['contact'] = ct
+
+
+def filter_raw(c, cid, raw, ann_keys=()):
+    """Lignes brutes d'une structure qui passent les filtres (stage, boîte, intitulé, pays). Utilisé aussi par lent.py."""
+    raw = [x for x in raw if keep_offer(x) and (x.get('trust') or not foreign(c, x['url']))]
+    if c.get('fam') in ('corp', 'consulting', 'fintech', '', None):
+        raw = [x for x in raw if x.get('trust') or FIN_TITLE.search(x.get('title') or '') or (c.get('fam') == 'consulting' and re.search(r'consult', x.get('title') or '', re.I))]
+    raw = [x for x in raw if title_ok(c, x)]  # Corporate VC : intitulé finance exigé ; grands groupes : postes hors finance écartés
+    raw = [x for x in raw if (cid, x.get('src')) not in ann_keys or country_ok(c, x.get('location'))]
+    if is_hl(cid):
+        raw = [x for x in raw if x.get('trust') or (country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or ''))]
+    return raw
+
+
+def company_key(o):
+    """Regroupement entre structures seulement si le nom complet normalisé est identique, et jamais sur un nom fait de mots génériques."""
+    name = _norm(o.get('company'))
+    words = [_norm(w) for w in re.split(r"[\s&()/,.'’-]+", LEGAL.sub(' ', o.get('company') or '')) if _norm(w)]
+    if len(name) < 4 or not [w for w in words if len(w) >= 3 and w not in STOP_TOK]: return 'id:' + str(o.get('company_id'))
+    return 'nom:' + name
+
+
+def dup_key(o):
+    """Même boîte + même contrat + titre normalisé (sans le lieu ni « H/F ») + pays."""
+    t = tnorm(o.get('title'))
+    t = re.sub(r"\(?\b(?:h\s*/\s*f|f\s*/\s*h|m\s*/\s*f|f\s*/\s*m|m\s*/\s*w\s*/\s*d|w\s*/\s*m\s*/\s*d)\b\)?", ' ', t)
+    for w in re.findall(r"[a-z]{3,}", tnorm(o.get('location'))):
+        t = re.sub(r'\b' + w + r'\b', ' ', t)
+    return (company_key(o), o.get('contract') or '', _norm(t) or _norm(o.get('title')), o.get('country') or '')
+
+
+def split_terms(g):
+    """Sépare les offres dont la durée ou le début, connus des deux côtés, diffèrent."""
+    out = []
+    for o in sorted(g, key=lambda o: o['id']):
+        for b in out:
+            if all((not o.get(k) or not x.get(k) or o[k] == x[k]) for x in b for k in ('months', 'start')):
+                b.append(o); break
+        else:
+            out.append([o])
+    return out
+
+
+def group_dups(offers, new_ids=()):
+    """Regroupe les offres ouvertes identiques : une principale (avec « cities »), les autres avec « dup_of ». Rien n'est supprimé.
+    La principale ne change pas quand une offre arrive : les marques posées sur le site restent au bon endroit."""
+    groups = {}
+    for o in offers.values():
+        if o.get('status') != 'open': continue
+        if not o.get('location'):  # sans lieu, rien ne dit que c'est la même offre
+            o.pop('dup_of', None); o.pop('cities', None)
+            continue
+        groups.setdefault(dup_key(o), []).append(o)
+    n = 0
+    for g in [b for g0 in groups.values() for b in split_terms(g0)]:
+        ids = {o['id'] for o in g}
+        was_main = {o['dup_of'] for o in g if o.get('dup_of') in ids}
+        main = min(g, key=lambda o: (o['id'] not in was_main, o['id'] in new_ids, bool(o.get('dup_of')), is_hl(o['company_id']), o.get('via') in AGG, o.get('first_seen') or '', o['id']))
+        cities = []
+        for o in g:
+            o.pop('dup_of', None); o.pop('cities', None)
+            v = clean(o.get('location')).split(',')[0].strip()
+            if v and v not in cities: cities.append(v)
+        if len(g) == 1: continue
+        for o in g:
+            if o is main: continue
+            o['dup_of'] = main['id']; n += 1
+            for k in ('months', 'start', 'contact', 'excerpt'):
+                if o.get(k) and not main.get(k): main[k] = o[k]
+        if len(cities) > 1: main['cities'] = cities[:30]
+    return n
+
+
+def check_links(offers, close):
+    """Offres d'agrégateurs : le lien répond-il encore ? (404, 410, page expirée = fermée). Budget par passage, les plus anciennes vérifications d'abord."""
+    if LINK_MAX <= 0: return 0
+    limit = (NOW - dt.timedelta(days=LINK_DAYS)).date().isoformat()
+    todo = [o for o in offers.values() if o['status'] == 'open' and o.get('via') in AGG and (o.get('link_ck') or '') <= limit and str(o.get('url')).startswith('http')]
+    todo.sort(key=lambda o: (o.get('link_ck') or '', o.get('last_seen') or ''))
+    todo = todo[:LINK_MAX]
+    denied, t0 = Counter(), time.time()
+
+    def one(o):
+        h = host_of(o['url'])
+        if denied[h] >= 3 or time.time() - t0 > LINKS_BUDGET_S: return o, None  # site qui refuse les robots : on arrête pour ce passage
+        st = link_state(o['url'])
+        if st == 'blocked': denied[h] += 1
+        return o, st
+    dead = 0
+    with ThreadPoolExecutor(16) as ex:
+        for o, st in ex.map(one, todo):
+            if st is None: continue
+            o['link_ck'] = NOW.date().isoformat()
+            if st == 'dead': close(o, 'lien_mort'); dead += 1
+    return dead
+
+
+LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
+             'dl_days', 'dl_day', 'dl_no')
+
+
+def write_lite(out, updated):
+    """offers-lite.json : ce que le site charge (sans extraits ni doublons, ouvertes + fermées récentes)."""
+    limit = (NOW - dt.timedelta(days=LITE_CLOSED_DAYS)).isoformat()
+    rows = [{k: v for k, v in o.items() if k not in LITE_DROP} for o in out
+            if not o.get('dup_of') and (o['status'] == 'open' or (o.get('closed_at') or '') >= limit)]
+    # table {id d'un doublon: id de sa principale} : le site y retrouve les marques posées sur une offre devenue doublon
+    ids = {o['id'] for o in rows}
+    dups = {o['id']: o['dup_of'] for o in out if o.get('dup_of')}
+    table = {}
+    for i, m in dups.items():
+        seen = {i}
+        while m in dups and m not in seen:  # principale devenue doublon à son tour
+            seen.add(m); m = dups[m]
+        if m in ids: table[i] = m
+    save('offers-lite.json', {'updated': updated, 'offers': rows, 'dup_of': table})
+
+
+def write_details(out):
+    """details/<ab>.json = {id: {excerpt, contact}} ; seuls les fichiers qui changent sont réécrits."""
+    shards = {}
+    for o in out:
+        if o.get('excerpt') or o.get('contact'):
+            shards.setdefault(o['id'][:2], {})[o['id']] = {'excerpt': o.get('excerpt') or '', 'contact': o.get('contact') or ''}
+    d = os.path.join(DATA, 'details')
+    have = set()
+    for f in (os.listdir(d) if os.path.isdir(d) else ()):
+        if f.endswith('.json'): have.add(f[:-5])
+        elif f.endswith('.tmp'): os.remove(os.path.join(d, f))  # reste d'une ancienne écriture
+    for k in sorted(set(shards) | have):
+        cur = shards.get(k, {})
+        if load(f'details/{k}.json') != cur: save(f'details/{k}.json', cur)
+
+
+def write_hist(out):
+    """historique.json = {company_id: [{t, c, o, f}]} : jamais purgé, même quand l'offre sort de offers.json."""
+    p = os.path.join(DATA, 'historique.json')
+    h = load('historique.json')
+    if h is None and os.path.exists(p) and os.path.getsize(p) > 0:
+        raise RuntimeError('historique.json illisible : laissé tel quel')
+    h = h or {}
+    by_id = {e['i']: e for lst in h.values() for e in lst if e.get('i')}
+    legacy = {(cid, e.get('t'), e.get('o')): e for cid, lst in h.items() for e in lst if not e.get('i')}
+    for o in sorted(out, key=lambda o: (o.get('first_seen') or '', o['id'])):
+        e = by_id.get(o['id']) or legacy.get((o['company_id'], o.get('title'), o.get('first_seen')))
+        if e is None:
+            if o.get('dup_of'): continue
+            e = {'t': o.get('title'), 'c': o.get('contract') or '', 'o': o.get('first_seen'), 'f': None}
+            h.setdefault(o['company_id'], []).append(e)
+        e['i'] = o['id']; by_id[o['id']] = e  # le titre ou la date peuvent changer, pas l'identifiant
+        e['t'] = o.get('title')
+        e['c'] = o.get('contract') or e.get('c') or ''
+        e['f'] = o.get('closed_at') if o['status'] == 'closed' else None
+    save('historique.json', h)
+
+
+def delay_stats(state, new_rows):
+    """Délai entre la publication et la détection, par source : nouvelles offres seulement (300 dernières par source)."""
+    w = state.setdefault('delays', {})
+    for o in new_rows:
+        if o.get('initial') or not o.get('posted') or o.get('status') != 'open': continue
+        try:
+            a = dt.datetime.fromisoformat(o['first_seen'].replace('Z', '+00:00')); b = dt.datetime.fromisoformat(o['posted'].replace('Z', '+00:00'))
+        except Exception:
+            continue
+        w.setdefault(o.get('via') or '?', []).append(round(max(0, (a - b).total_seconds() / 3600), 1))
+    for k in w: w[k] = w[k][-300:]
+    return {k: {'n': len(v), 'median_h': round(statistics.median(v), 1)} for k, v in w.items() if v}
+
+
+def stays_closed(o):
+    """Fermée pour date limite passée ou année passée : revoir l'annonce en ligne ne la rouvre pas (sauf date limite repoussée,
+    ou annonce revue plusieurs jours après sa fermeture : la date était mal lue)."""
+    if o.get('status') != 'closed': return False
+    if o.get('closed_reason') == 'annee_passee': return True
+    if o.get('closed_reason') != 'deadline' or str(o.get('deadline') or '')[:10] >= NOW.date().isoformat(): return False
+    day = NOW.date().isoformat()
+    if o.get('dl_day') != day:
+        o['dl_day'] = day; o['dl_days'] = o.get('dl_days', 0) + 1
+    if o['dl_days'] < DL_REOPEN_DAYS: return True
+    o['dl_no'] = str(o.get('deadline'))[:10]; o['deadline'] = None  # date écartée : ne referme plus l'offre, relecture comprise
+    o.pop('dl_day', None); o.pop('dl_days', None)
+    return False
+
+
 def main():
     structs = load('structures.json')
     seeds_all = {c['id']: c for c in (load('companies.json') or [])}
@@ -257,6 +540,7 @@ def main():
     ann = load('annuaire.json') or {}
     ann_keys = {(cid, m.get('k')) for cid, ms in ann.items() for m in ms}
     recettes = merge_annuaire(recettes, ann)
+    recettes = merge_dedies(recettes, load('dedies.json'))
     if EXTRA:
         hs, hr = hors_liste()
         ids0 = {c['id'] for c in structs}
@@ -267,7 +551,7 @@ def main():
     old = {o['id']: o for o in old_doc.get('offers', [])}
     state = load('state.json') or {}
     state['run'] = state.get('run', 0) + 1
-    if state.get('schema') != SCHEMA: old = {}; state['schema'] = SCHEMA
+    state['schema'] = SCHEMA  # jamais de remise à zéro : un state.json absent ou ancien ne doit pas effacer les offres
     state.pop('pages', None)
     # sources déjà lues (« structure|méthode ») : les offres d'une source lue pour la première fois sont
     # marquées « déjà en ligne » au lieu d'apparaître comme nouvelles
@@ -287,15 +571,75 @@ def main():
             seen_src.add(sig)
         todo.append(c)
     byid = {c['id']: c for c in structs}
+    behind = set(state.get('behind') or [])
+    cut = dict(state.get('cut') or {})
+    lent_only = set(state.get('lent_only') or [])  # structures trop lentes pour ce passage : lues par lent.py
+    todo = [c for c in todo if c['id'] not in lent_only]
+    # d'abord ce qui n'a pas pu démarrer au passage précédent ; les structures coupées passent après toutes les autres
+    todo.sort(key=lambda c: (cut.get(c['id'], 0), c['id'] not in behind))
 
     results = {}
-    with ThreadPoolExecutor(WORKERS) as ex:
-        futs = {ex.submit(scan, c, recettes.get(c['id']), seeds_all.get(c['id'], {})): c for c in todo}
-        for f in as_completed(futs):
-            c = futs[f]
-            try: results[c['id']] = f.result()
-            except Exception as e: results[c['id']] = ([], {'id': c['id'], 'ok': False, 'err': str(e)[:80], 'ran': [], 'complete': True})
+    sem, lock, started, freed, overrun = threading.BoundedSemaphore(WORKERS), threading.Lock(), {}, set(), set()
+
+    def free(cid):
+        with lock:
+            if cid in freed: return
+            freed.add(cid)
+        sem.release()
+
+    def timed(c):
+        sem.acquire()
+        cid = c['id']
+        if time.time() - T0 > FAST_BUDGET_S:  # trop tard : jamais démarrée
+            sem.release()
+            return None
+        started[cid] = time.time()
+        try: return scan(c, recettes.get(cid), seeds_all.get(cid, {}))
+        finally: free(cid)
+
+    def take(f):
+        c = futs[f]
+        try:
+            r = f.result()
+            if r is not None: results[c['id']] = r
+        except Exception as e:
+            results[c['id']] = ([], {'id': c['id'], 'ok': False, 'err': str(e)[:80], 'ran': [], 'complete': True})
+
+    # le double de fils : un fil coupé reste occupé (Python ne sait pas l'arrêter), le sémaphore limite ceux qui travaillent vraiment
+    ex = ThreadPoolExecutor(WORKERS * 2)
+    futs = {ex.submit(timed, c): c for c in todo}
+    pending = set(futs)
+    while pending and time.time() - T0 < FAST_BUDGET_S:
+        done, pending = wait(pending, timeout=min(0.25, max(0.01, FAST_BUDGET_S - (time.time() - T0))), return_when=FIRST_COMPLETED)
+        for f in done: take(f)
+        now = time.time()
+        for cid, t in list(started.items()):
+            if now - t > SCAN_MAX_S and cid not in freed:
+                overrun.add(cid); free(cid)
+    done_late = [f for f in pending if f.done()]
+    for f in done_late: take(f); pending.discard(f)
+    if pending: LEFTOVER[0] = True
+    ex.shutdown(wait=False, cancel_futures=True)
+    now = time.time()
+    for f in pending:
+        cid = futs[f]['id']
+        if cid in started and now - started[cid] > SCAN_MAX_S: overrun.add(cid)
+    for c in todo:
+        cid = c['id']
+        if cid in overrun:
+            cut[cid] = cut.get(cid, 0) + 1
+            if cut[cid] >= CUT_MAX: lent_only.add(cid)
+        elif cid in results: cut.pop(cid, None)
+    state['cut'], state['lent_only'] = cut, sorted(lent_only)
+    state['behind'] = sorted(c['id'] for c in todo if c['id'] not in results and c['id'] not in lent_only)  # non lues : ni échec ni absence, simplement reportées
+    if state['behind']: print(f"budget de lecture atteint : {len(state['behind'])} structures reportées, {len(overrun)} coupées", flush=True)
     t_fast = time.time() - T0
+    lent_new = None
+    try:
+        lent_new = consume_lent(state, results, structs, byid)
+        if lent_new: print('passage lent repris :', lent_new, flush=True)
+    except Exception as e:
+        err('reprise du passage lent', e)
     if AGGR:
         try:
             agg, pseudo = run_aggregators(structs, recettes, state['run'])
@@ -314,20 +658,13 @@ def main():
             rr = asyncio.run(render_all(items)) if items else {}
         except Exception as e:
             err('rendu navigateur', e); rr = {}
-        for cid, lst in rr.items():
-            raw, info = results.get(cid) or ([], {'id': cid, 'ok': False, 'via': '', 'err': '', 'ran': [], 'complete': True})
-            info.pop('skip', None)
-            for got, err in lst:
-                if err is None:
-                    raw += got; info['ok'] = True; info['ran'].append('render'); info['via'] = info['via'] or 'render'
-                else:
-                    info['err'] = 'rendu: ' + err
-            info['complete'] = True
-            results[cid] = (raw, info)
+        merge_render(results, rr)
 
     offers = dict(old); new_ids = []
     url_idx = {}
-    for o in old.values(): url_idx[o['url']] = o
+    for o in old.values():
+        url_idx[o['url']] = o
+        if o.get('url_agg'): url_idx[o['url_agg']] = o  # adresse d'agrégateur remplacée par le lien officiel : l'offre reste reconnue
     closed_now = 0
     failed_now = []  # sources en échec à ce passage (structure de la liste dont aucune méthode n'a répondu)
 
@@ -350,25 +687,29 @@ def main():
         fresh_src = {s for s in info['ran'] if cid + '|' + s not in known}
         known.update(cid + '|' + s for s in info['ran'])
         raw_by_src = Counter(x.get('src') for x in raw)
-        raw = [x for x in raw if keep_offer(x) and (x.get('trust') or not foreign(c, x['url']))]
-        if c.get('fam') in ('corp', 'consulting', 'fintech', '', None):
-            raw = [x for x in raw if x.get('trust') or FIN_TITLE.search(x.get('title') or '') or (c.get('fam') == 'consulting' and re.search(r'consult', x.get('title') or '', re.I))]
-        raw = [x for x in raw if title_ok(c, x)]  # Corporate VC : intitulé finance exigé ; grands groupes : postes hors finance écartés
-        raw = [x for x in raw if (cid, x.get('src')) not in ann_keys or country_ok(c, x.get('location'))]
-        if is_hl(cid):
-            raw = [x for x in raw if x.get('trust') or (country_of(x.get('location') or '') and HL_TITLE.search(x.get('title') or ''))]
+        raw_by_src.update({k: v for k, v in (info.get('raw_n') or {}).items() if not raw_by_src[k]})  # lignes lues avant le tri fait par lent.py
+        raw = filter_raw(c, cid, raw, ann_keys)
         live = set()
         own_titles = {_norm(o['title']) + '|' + country_of(o.get('location') or '') for o in offers.values() if o['company_id'] == cid and o['status'] == 'open'}
         for x in raw:
             x['title'] = clean(x['title'])
+            direct = x.get('direct') if direct_ok(x.get('direct')) else ''
             prev = url_idx.get(x['url'])
+            if not prev and direct:
+                prev = url_idx.get(direct)
+                if prev and prev.get('via') not in AGG: continue  # déjà lue sur le site de l'entreprise : l'agrégateur n'apporte rien
             if prev and prev['company_id'] != cid: continue
             if not prev and x.get('src') in AGG and _norm(x['title']) + '|' + country_of(x.get('location') or '') in own_titles: continue
+            if not prev and past_title(x['title']): continue  # jamais enregistrée : elle serait fermée aussitôt, à chaque retour
             oid = prev['id'] if prev else hashlib.sha1((cid + '|' + str(x.get('ext') or x['url'])).encode()).hexdigest()[:14]
             if oid in live: continue
             live.add(oid)
             if oid in offers:
-                o = offers[oid]; o['status'] = 'open'; o.pop('closed_at', None); o.pop('miss', None)
+                o = offers[oid]
+                dl = str(x.get('deadline') or '')[:10]
+                if re.match(r'20\d{2}-\d{2}-\d{2}$', dl) and dl > str(o.get('deadline') or ''): o['deadline'] = dl
+                if stays_closed(o): continue
+                o['status'] = 'open'; o.pop('closed_at', None); o.pop('closed_reason', None); o.pop('miss', None)
                 if (o.get('last_seen') or '') <= FRESH: o['last_seen'] = NOW_ISO
                 if (not o.get('site') or NOLOGO_HOST.search(host_of(o['site']) + '.')) and official_site(c): o['site'] = official_site(c)
                 if x.get('logo') and not o.get('logo'): o['logo'] = x['logo']
@@ -377,11 +718,15 @@ def main():
                 if x.get('src') in PLUS and x.get('desc') and not o.get('txt2') and not (o.get('months') and o.get('start')):
                     o['_desc'] = x['desc']; o['txt2'] = 1  # texte complet reçu une fois pour retrouver durée et début
                 if x.get('src') and (x['src'] not in PLUS or o.get('via') in AGG): o['via'] = x['src']
+                if direct and o.get('via') in AGG and o['url'] != direct:  # lien officiel d'une offre connue : l'identifiant ne change pas
+                    o.setdefault('url_agg', o['url']); o['url'] = direct; url_idx[direct] = o
+                    o.pop('reread', None); o.pop('reread2', None); o.pop('link_ck', None)
                 continue
             o = {'id': oid, 'company_id': cid, 'company': c['name'], 'fam': c.get('fam', ''), 'site': official_site(c),
-                 'title': x['title'][:200], 'url': x['url'], 'location': clean(x.get('location'))[:120], 'posted': x.get('posted'),
+                 'title': x['title'][:200], 'url': direct or x['url'], 'location': clean(x.get('location'))[:120], 'posted': x.get('posted'),
                  'first_seen': NOW_ISO, 'last_seen': NOW_ISO, 'status': 'open', 'via': x.get('src') or info['via'], 'deadline': x.get('deadline'),
                  '_desc': x.get('desc') or '', '_commit': x.get('commit') or ''}
+            if direct: o['url_agg'] = x['url']; url_idx[x['url']] = o
             if x.get('logo'): o['logo'] = x['logo']  # logo de l'entreprise fourni par l'agrégateur
             if x.get('start'): o['start'] = x['start']
             if x.get('months'): o['months'] = x['months']  # durée calculée d'après les dates de début et de fin de l'API
@@ -418,10 +763,15 @@ def main():
 
     # offres déjà enregistrées qui ne passent plus les filtres : FERMÉES (statut « closed », motif gardé), jamais supprimées
     hors_fin_closed = 0
+    # ces offres ne sont revues que par le passage lent : seule une source lue en entier récemment peut conclure à leur absence
+    cycles = state.get('cycles') or {}
+
+    def sweep_ok(o):
+        return EXTRA or hours_since(cycles.get(o.get('via') if o.get('via') in AGG else o['company_id'])) < SWEEP_LENT_H
     for o in offers.values():
         if o['status'] != 'open': continue
         c = byid.get(o['company_id']) or {}
-        if (o.get('via') in AGG or is_hl(o['company_id'])) and (o.get('last_seen') or '') <= SWEEP:
+        if sweep_ok(o) and (o.get('via') in AGG or is_hl(o['company_id'])) and (o.get('last_seen') or '') <= SWEEP:
             close(o)
         elif is_hl(o['company_id']) and not o.get('trust') and not HL_TITLE.search(o.get('title') or ''):
             close(o, 'hors_finance'); hors_fin_closed += 1
@@ -458,7 +808,7 @@ def main():
 
     # deuxième rattrapage : toute offre ouverte sans durée ou sans début est relue une fois, avec la plateforme déduite de son adresse
     for o in offers.values():
-        if o['status'] != 'open' or (o.get('months') and o.get('start')) or o.get('dk') or o.get('reread2') or o.get('via') == 'efc': continue
+        if o['status'] != 'open' or (o.get('months') and o.get('start')) or o.get('dk') or o.get('reread2'): continue
         k = reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
         if k: o['dk'] = k
         o['reread2'] = 1
@@ -466,10 +816,14 @@ def main():
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
     new_set = set(new_ids)
     need = [offers[i] for i in new_ids if offers[i].get('dk') and not offers[i].get('initial')]
-    need += [o for o in offers.values() if o.get('dk') and (o['id'] not in new_set or o.get('initial')) and o['status'] == 'open']
+    need += sorted((o for o in offers.values() if o.get('dk') and (o['id'] not in new_set or o.get('initial')) and o['status'] == 'open'),
+                   key=lambda o: o.get('first_seen') or '', reverse=True)  # les offres récentes d'abord
     need = need[:MAX_DETAILS]
 
+    t_details = time.time()
+
     def fill(o):
+        if time.time() - t_details > DETAILS_BUDGET_S: return  # gardée pour le passage suivant
         try:
             kind, u = o['dk']; txt, dl, loc, posted = detail_text(kind, u)
             o['_desc'] = txt; o['deadline'] = o.get('deadline') or dl
@@ -485,10 +839,13 @@ def main():
     except Exception as e:
         err('fiches détaillées', e)
 
+    texts = {}
+
     def enrich(o):
         c = byid.get(o['company_id'], {}); d = o.pop('_desc', '') or ''; com = o.pop('_commit', '') or ''
+        if d: texts[o['id']] = d
         ct = contract_of(o['title'] + ' ' + com)
-        if not (o.get('contract') and ct == 'Stage' and not com): o['contract'] = ct  # relecture : garder le contrat déjà trouvé
+        if o.get('contract_src') != 'ia' and not (o.get('contract') and ct == 'Stage' and not com): o['contract'] = ct  # relecture : garder le contrat déjà trouvé
         o['domain'] = domain_of(o['title'], d, c.get('fam'))
         # durée et début : seulement s'ils sont écrits (titre, texte, champs de la plateforme) ; sinon null, jamais devinés
         o['months'] = months_of(o['title']) or months_of(d) or o.get('months') or None
@@ -497,6 +854,7 @@ def main():
         o['start'] = start_of(o['title']) or start_of(d, loose=False) or old_start or None
         dl = o.get('deadline')
         o['deadline'] = (str(dl)[:10] if dl and re.match(r'20\d{2}-\d{2}-\d{2}', str(dl)) else None) or deadline_of(d)
+        if o['deadline'] and o['deadline'] == o.get('dl_no'): o['deadline'] = None  # date déjà démentie par l'annonce restée en ligne
         if o['start'] and o['deadline'] and o['start'] == o['deadline'][:7] and not (start_of(o['title']) or start_of(d, loose=False)):
             o['start'] = None  # le « début » gardé n'était que le mois de la date limite
         if not o['start'] and (start_asap(o['title']) or start_asap(d)): o['start_asap'] = 1
@@ -504,17 +862,55 @@ def main():
         if cesure_of(o['title'] + ' ' + d[:4000]): o['cesure'] = 1
         # lieu : celui du poste (plateforme, fiche, « Lieu : … » dans le texte) ; la ville du siège n'est jamais recopiée
         if not o.get('location'): o['location'] = location_of(d)
-        o['country'] = country_of(o.get('location') or '')
-        o.pop('country_hq', None)
-        if not o['country']:
-            hc = home_countries(c) if c else set()
-            if len(hc) == 1: o['country'] = next(iter(hc)); o['country_hq'] = 1  # pays du siège, signalé comme tel
+        set_country(o, c)
         if d: o['excerpt'] = d[:500]
+        classify(o, d)
     for o in list(offers.values()):
         if o['id'] in new_set or '_desc' in o:
             try: enrich(o)
             except Exception as e:
                 o.pop('_desc', None); o.pop('_commit', None); err('enrichissement ' + str(o.get('id')), e)
+
+    # une fois : toutes les offres gardées repassent par les règles actuelles (pays, métier, type de structure, langues, contact)
+    if state.get('robot_v') != ROBOT_V:
+        for o in offers.values():
+            try:
+                set_country(o, byid.get(o['company_id'], {}))
+                classify(o, o.get('excerpt') or '')
+            except Exception as e:
+                err('reclassement ' + str(o.get('id')), e)
+        state['robot_v'] = ROBOT_V
+
+    # fermetures : date limite passée, titre qui vise une période finie, lien d'agrégateur mort
+    today = NOW.date().isoformat()
+    year_closed = year_reopened = 0
+    for o in offers.values():
+        if o['status'] != 'open': continue
+        dl = str(o.get('deadline') or '')[:10]
+        if re.match(r'20\d{2}-\d{2}-\d{2}$', dl) and dl < today: close(o, 'deadline')
+        elif YEAR_CLOSE and past_title(o.get('title')): close(o, 'annee_passee'); year_closed += 1
+    # réversible : une fermeture « année passée » récente que la règle ne confirme plus est annulée
+    year_revert = (NOW - dt.timedelta(days=YEAR_REVERT_DAYS)).isoformat()
+    for o in offers.values():
+        if o.get('closed_reason') == 'annee_passee' and (o.get('closed_at') or '') >= year_revert and not (YEAR_CLOSE and past_title(o.get('title'))):
+            o['status'] = 'open'; o.pop('closed_at', None); o.pop('closed_reason', None); year_reopened += 1
+    dead_links = 0
+    try:
+        dead_links = check_links(offers, close)
+    except Exception as e:
+        err('liens des agrégateurs', e)
+
+    # option IA : complète le classement des nouvelles offres, jamais bloquant
+    try:
+        ia.run(offers, texts, new_set, state)
+    except Exception as e:
+        err('classement IA', e)
+
+    n_dups = 0
+    try:
+        n_dups = group_dups(offers, new_set)
+    except Exception as e:
+        err('regroupement des doublons', e)
 
     limit = (NOW - dt.timedelta(days=CLOSED_KEEP_DAYS)).isoformat()
     offers = {k: o for k, o in offers.items() if not (o['status'] == 'closed' and (o.get('closed_at') or '') < limit)}
@@ -536,19 +932,35 @@ def main():
     meta = {'updated': NOW_ISO, 'run': state['run'], 'seconds': round(time.time() - T0), 'seconds_fast': round(t_fast), 'render': RENDER,
             'structures': sum(1 for c in structs if not is_hl(c['id'])), 'companies_scanned': sum(1 for k, (_, i) in results.items() if not i.get('skip') and not is_hl(k)),
             'companies_ok': len(ok_ids), 'tracked_count': len(tracked), 'via': dict(via.most_common()),
-            'open': sum(1 for o in out if o['status'] == 'open'), 'new_this_run': sum(1 for i in new_ids if i in offers and not offers[i].get('initial')),
+            'open': sum(1 for o in out if o['status'] == 'open' and not o.get('dup_of')), 'open_with_dups': sum(1 for o in out if o['status'] == 'open'), 'dups': n_dups,
+            'dead_links_this_run': dead_links, 'annee_passee_this_run': year_closed, 'annee_passee_reopened': year_reopened, 'ia': dict(ia.LAST),
+            'cut': len(overrun), 'lent_only': len(state.get('lent_only') or []), 'lent_consumed': bool(lent_new), 'last_full': state.get('last_full') or state.get('last_extra'), 'behind': len(state.get('behind') or []),
+            'delay_by_source': delay_stats(state, [offers[i] for i in new_ids if i in offers]),
+            'new_this_run': sum(1 for i in new_ids if i in offers and not offers[i].get('initial')),
             'initial_this_run': sum(1 for i in new_ids if i in offers and offers[i].get('initial')), 'closed_this_run': closed_now,
-            'failed': failed, 'hors_liste_open': sum(1 for o in out if o['status'] == 'open' and is_hl(o['company_id'])), 'extra': EXTRA, 'tracked': tracked}
+            'failed': failed, 'hors_liste_open': sum(1 for o in out if o['status'] == 'open' and is_hl(o['company_id']) and not o.get('dup_of')), 'extra': EXTRA, 'tracked': tracked}
     scanned = meta['companies_scanned'] or 1
     meta.update({'errors': len(ERRS), 'error_list': ERRS[:40], 'failed_sources': sorted(x['id'] for x in failed_now)[:400],
                  'failed_sources_count': len(failed_now), 'failed_sources_sample': failed_now[:25],
                  'error_rate': round(len(failed_now) / scanned, 3), 'hors_finance_closed_this_run': hors_fin_closed})
-    meta['degraded'] = bool(ERRS) or meta['error_rate'] > ERR_RATE_MAX
+    tried = sum(1 for _, i in results.values() if not i.get('skip')) + len(state.get('behind') or [])
+    meta['blocked'] = bool(tried and not ok_ids)  # rien lu du tout
+    meta['behind_rate'] = round(len(state.get('behind') or []) / max(1, len(todo)), 3)
+    meta['degraded'] = bool(ERRS) or meta['error_rate'] > ERR_RATE_MAX or meta['blocked'] or meta['behind_rate'] > BEHIND_MAX
     state['known_src'] = sorted(known); state['fails'] = fails
     if RENDER: state['last_render'] = NOW_ISO
     if EXTRA: state['last_extra'] = NOW_ISO
     changed = json.dumps(out, sort_keys=True, ensure_ascii=False) != old_snap
-    save('offers.json', {'updated': NOW_ISO if changed else old_doc.get('updated', NOW_ISO), 'offers': out})
+    updated = NOW_ISO if changed else old_doc.get('updated', NOW_ISO)
+    save('offers.json', {'updated': updated, 'offers': out})
+    # fichiers dérivés d'offers.json : une panne ici ne touche pas les offres enregistrées
+    for name, f in (('offers-lite', lambda: write_lite(out, updated)), ('details', lambda: write_details(out)), ('historique', lambda: write_hist(out))):
+        try: f()
+        except Exception as e: err(name, e)
+    meta.update({'errors': len(ERRS), 'error_list': ERRS[:40]})
+    meta['degraded'] = bool(meta['degraded'] or ERRS)
+    try: meta['lite_bytes'] = os.path.getsize(os.path.join(DATA, 'offers-lite.json'))
+    except OSError: pass
     save('meta.json', meta, pretty=True)
     save('state.json', state)
     m2 = dict(meta); m2.pop('tracked'); m2['failed'] = len(failed)
@@ -559,3 +971,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+    if LEFTOVER[0]:  # lectures reportées encore en cours : tout est enregistré, inutile de les attendre
+        sys.stdout.flush(); sys.stderr.flush(); os._exit(0)
