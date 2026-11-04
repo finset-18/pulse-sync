@@ -35,7 +35,8 @@ EFC = 'https://job-search-api.efinancialcareers.com/v1/efc/jobs/search'
 EFC_C = ('FR', 'GB', 'LU', 'CH', 'BE', 'DE', 'NL', 'IE', 'ES', 'IT', 'US', 'HK', 'SG', 'AE')
 EFC_Q = ('intern', 'stage', 'off-cycle', 'summer analyst', 'graduate')
 # eFinancialCareers publie aussi des postes hors métiers de la finance chez ses clients
-EFC_NO = re.compile(r"communication|marketing|\bhr\b|human resources|ressources humaines|recruit|talent|legal|juridique|software|developer|d[ée]veloppeur|\bit\b|cyber|design|event|[ée]v[ée]nementiel", re.I)
+EFC_NO = re.compile(r"communication|marketing|\bhr\b|human resources|ressources humaines|recruit|talent|legal|juridique|software|developer|d[ée]veloppeur|\bit\b|cyber|design|event|[ée]v[ée]nementiel|"
+                    r"engineer|ing[ée]nieur|devops|cloud|product (?:manager|owner)|\bux\b|procurement|achats|supply chain|logisti|facilities|office manager", re.I)
 EFC_PAGES = int(os.environ.get('EFC_PAGES', '3'))
 ALGOLIA = ('https://csekhvms53-dsn.algolia.net/1/indexes/wttj_jobs_production_fr/query'
            '?x-algolia-application-id=CSEKHVMS53&x-algolia-api-key=4bd8f6215d0cc52b26430765769e65a0')
