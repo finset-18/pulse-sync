@@ -1,6 +1,6 @@
 name: sync
 
-# Un seul job qui enchaîne un passage toutes les 5 minutes pendant 5 h 30.
+# Un seul job qui enchaîne un passage toutes les 5 minutes (EVERY_S) pendant 5 h 30 (LOOP_MIN).
 # Le planning GitHub ne garantit pas un départ toutes les 5 min (il les espace souvent de 30 à 60 min) :
 # le cron sert seulement à relancer la boucle quand la précédente se termine.
 on:
@@ -63,28 +63,65 @@ jobs:
           FORCE_EXTRA: ${{ github.event.inputs.extra }}
           FT_CLIENT_ID: ${{ secrets.FT_CLIENT_ID }}
           FT_CLIENT_SECRET: ${{ secrets.FT_CLIENT_SECRET }}
+          # échecs visibles : le job finit en rouge (après avoir enregistré les offres de chaque passage) si
+          # CRASH_MAX passages ont planté en entier, si 3 plantages se suivent (arrêt immédiat), ou si plus de
+          # DEGRADED_PCT % des passages sont dégradés (étape en erreur, ou plus de ERR_RATE_MAX des sources en échec)
+          CRASH_MAX: "2"
+          DEGRADED_PCT: "30"
+          ERR_RATE_MAX: "0.5"
         run: |
           git config user.name "sync-bot"
           git config user.email "sync-bot@users.noreply.github.com"
+          S="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "## Passages du robot"
+            echo ""
+            echo "| # | heure (UTC) | résultat | durée | ouvertes | nouvelles | fermées | sources en échec | erreurs |"
+            echo "|---|---|---|---|---|---|---|---|---|"
+          } >> "$S"
           end=$(( $(date +%s) + LOOP_MIN * 60 ))
-          n=0
+          n=0; crashes=0; streak=0; degraded=0; push_fail=0; slow=0
           while [ "$(date +%s)" -lt "$end" ]; do
             t0=$(date +%s); n=$((n + 1))
+            # scripts du robot à jour à chaque passage (un correctif poussé sur pulse-sync sert au passage suivant, pas au job suivant)
+            git -C "$GITHUB_WORKSPACE" fetch -q --depth=1 origin "$GITHUB_REF_NAME" && git -C "$GITHUB_WORKSPACE" checkout -q --detach FETCH_HEAD || true
             git pull -q --rebase -X theirs || true
-            plan=$(GITHUB_OUTPUT= python ../scripts/plan.py)
+            plan=$(GITHUB_OUTPUT= python ../scripts/plan.py || printf 'render=0\nextra=0\n')
             render=$(echo "$plan" | sed -n 's/^render=//p'); extra=$(echo "$plan" | sed -n 's/^extra=//p')
             if RENDER=$render EXTRA=$extra python ../scripts/veille.py > ../run.log 2>&1; then
+              streak=0
               echo "passage $n (rendu $render, étendu $extra)"
-              grep -E '"(open|new_this_run|closed_this_run|hors_liste_open|seconds)"|^agr' ../run.log || true
+              grep -E '"(open|new_this_run|closed_this_run|hors_liste_open|seconds|errors|failed_sources_count|error_rate|degraded)"|^agr|^erreur' ../run.log || true
+              row=$(python -c 'import json,sys; m=json.load(open(sys.argv[1])); print("%s|%s|%s|%s|%s|%s|%s" % ("dégradé" if m.get("degraded") else "ok", str(m.get("seconds", "?")) + " s", m.get("open", "?"), m.get("new_this_run", "?"), m.get("closed_this_run", "?"), m.get("failed_sources_count", "?"), m.get("errors", "?")))' data/meta.json 2>/dev/null || echo "ok|?|?|?|?|?|?")
+              case "$row" in dégradé*) degraded=$((degraded + 1)); echo "::warning title=passage $n dégradé::$(grep '^erreur' ../run.log | head -n 3 | tr '\n' ' ')";; esac
             else
+              crashes=$((crashes + 1)); streak=$((streak + 1))
               echo "passage $n en échec"; tail -n 15 ../run.log
+              echo "::error title=passage $n en échec::$(tail -n 1 ../run.log | cut -c1-300)"
+              row="**PLANTAGE**|$(( $(date +%s) - t0 )) s|-|-|-|-|-"
             fi
+            dur=$(( $(date +%s) - t0 ))
+            if [ "$dur" -gt "$EVERY_S" ]; then slow=$((slow + 1)); fi
+            echo "| $n | $(date -u +%H:%M) | $(echo "$row" | sed 's/|/ | /g') |" >> "$S"
             export FORCE_RENDER=false FORCE_EXTRA=false
-            git add data/offers.json data/meta.json data/state.json data/a_revoir.json
+            git add data/offers.json data/meta.json data/state.json data/a_revoir.json 2>/dev/null || true
             if ! git diff --cached --quiet; then
               git commit -q -m "sync $(date -u +'%Y-%m-%d %H:%M')"
-              for i in 1 2 3 4 5 6; do git pull -q --rebase -X theirs && git push -q && break; sleep $((i * 5)); done
+              ok=0
+              for i in 1 2 3 4 5 6; do if git pull -q --rebase -X theirs && git push -q; then ok=1; break; fi; sleep $((i * 5)); done
+              if [ "$ok" = 0 ]; then push_fail=$((push_fail + 1)); echo "::warning title=envoi impossible::passage $n non enregistré dans le dépôt de données (réessayé au passage suivant)"; fi
             fi
+            if [ "$streak" -ge 3 ]; then echo "::error::3 passages de suite en échec : arrêt de la boucle"; break; fi
             left=$(( EVERY_S - ($(date +%s) - t0) ))
             if [ "$left" -gt 0 ]; then sleep "$left"; fi
           done
+          {
+            echo ""
+            echo "**Bilan** : $n passages, $crashes plantés, $degraded dégradés, $slow plus longs que ${EVERY_S} s, $push_fail envois ratés."
+          } >> "$S"
+          echo "bilan : $n passages, $crashes plantés, $degraded dégradés, $slow trop longs, $push_fail envois ratés"
+          fail=0
+          if [ "$crashes" -ge "$CRASH_MAX" ] || [ "$streak" -ge 3 ]; then fail=1; fi
+          if [ "$n" -gt 0 ] && [ $(( degraded * 100 / n )) -gt "$DEGRADED_PCT" ]; then fail=1; fi
+          if [ "$push_fail" -ge 3 ]; then fail=1; fi
+          if [ "$fail" = 1 ]; then echo "**Job en échec** : seuil d'erreurs dépassé (les offres des passages réussis sont enregistrées)." >> "$S"; exit 1; fi
