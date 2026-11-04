@@ -1,0 +1,63 @@
+name: lent
+
+# Passage lent : sociétés hors liste, agrégateurs, sources supplémentaires et rendu navigateur.
+# Il ne touche pas aux offres : il écrit data/lent.json, que le job sync reprend à son passage suivant.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lent
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        env:
+          R: ${{ secrets.DATA_REPO }}
+          T: ${{ secrets.DATA_TOKEN }}
+        run: '[ -n "$R" ] && [ -n "$T" ] || { echo "missing DATA_REPO / DATA_TOKEN secrets"; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-1.48.0
+      - run: |
+          pip install -q requests==2.32.3 playwright==1.48.0 && python -m playwright install --with-deps chromium > /dev/null
+          pip install -q python-jobspy || true
+      - name: slow pass
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+          WORKERS: "48"
+          AGG_PER_PASS: "120"
+          FT_CLIENT_ID: ${{ secrets.FT_CLIENT_ID }}
+          FT_CLIENT_SECRET: ${{ secrets.FT_CLIENT_SECRET }}
+        run: |
+          python scripts/lent.py > run.log 2>&1 || { tail -n 15 run.log | cut -c1-300; exit 1; }
+          tail -n 3 run.log | cut -c1-300
+      - name: save
+        working-directory: store
+        run: |
+          [ -f data/lent.json ] || exit 0
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add data/lent.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "lent $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase --autostash -X theirs && git push -q && exit 0; sleep $((i * 7)); done
+          exit 1
