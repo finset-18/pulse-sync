@@ -3,19 +3,12 @@ name: sync
 # Un seul job qui enchaîne un passage toutes les 5 minutes (EVERY_S) pendant 5 h 30 (LOOP_MIN).
 # Le planning GitHub ne garantit pas un départ toutes les 5 min (il les espace souvent de 30 à 60 min) :
 # le cron sert seulement à relancer la boucle quand la précédente se termine.
+# Ce job ne fait que le rapide (plateformes, API, pages) : hors liste, sources supplémentaires et rendu navigateur tournent dans
+# lent.yml, qui écrit data/lent.json ; veille.py le reprend quand il est nouveau.
 on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
-    inputs:
-      render:
-        description: "Force the browser pass"
-        type: boolean
-        default: false
-      extra:
-        description: "Force the extended pass"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -43,26 +36,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-1.48.0
-      - run: |
-          pip install -q requests==2.32.3 playwright==1.48.0 && python -m playwright install --with-deps chromium > /dev/null
-          pip install -q python-jobspy || true
+      - run: pip install -q requests==2.32.3
       - name: loop
         working-directory: store
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           WORKERS: "48"
-          EXTRA_EVERY_H: "1"
-          RENDER_EVERY_H: "0.5"
+          RENDER: "0"
+          EXTRA: "0"
+          AGGR: "0"
+          FAST_BUDGET_S: "230"
+          DETAILS_BUDGET_S: "35"
+          LINKS_BUDGET_S: "20"
           LOOP_MIN: "330"
           EVERY_S: "300"
-          FORCE_RENDER: ${{ github.event.inputs.render }}
-          FORCE_EXTRA: ${{ github.event.inputs.extra }}
-          FT_CLIENT_ID: ${{ secrets.FT_CLIENT_ID }}
-          FT_CLIENT_SECRET: ${{ secrets.FT_CLIENT_SECRET }}
+          # options : sans ces secrets, le passage fonctionne pareil (règles seules, aucune alerte)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ALERTS_URL: ${{ secrets.ALERTS_URL }}
+          ALERTS_SECRET: ${{ secrets.ALERTS_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERTS_FROM: ${{ secrets.ALERTS_FROM }}
           # échecs visibles : le job finit en rouge (après avoir enregistré les offres de chaque passage) si
           # CRASH_MAX passages ont planté en entier, si 3 plantages se suivent (arrêt immédiat), ou si plus de
           # DEGRADED_PCT % des passages sont dégradés (étape en erreur, ou plus de ERR_RATE_MAX des sources en échec)
@@ -85,12 +78,12 @@ jobs:
             t0=$(date +%s); n=$((n + 1))
             # scripts du robot à jour à chaque passage (un correctif poussé sur pulse-sync sert au passage suivant, pas au job suivant)
             git -C "$GITHUB_WORKSPACE" fetch -q --depth=1 origin "$GITHUB_REF_NAME" && git -C "$GITHUB_WORKSPACE" checkout -q --detach FETCH_HEAD || true
-            git pull -q --rebase -X theirs || true
-            plan=$(GITHUB_OUTPUT= python ../scripts/plan.py || printf 'render=0\nextra=0\n')
-            render=$(echo "$plan" | sed -n 's/^render=//p'); extra=$(echo "$plan" | sed -n 's/^extra=//p')
-            if RENDER=$render EXTRA=$extra python ../scripts/veille.py > ../run.log 2>&1; then
+            git pull -q --rebase --autostash -X theirs || true
+            if python ../scripts/veille.py > ../run.log 2>&1; then
               streak=0
-              echo "passage $n (rendu $render, étendu $extra)"
+              echo "passage $n"
+              # annotations (::warning) visibles dans le job : pas de filtre sur la sortie
+              python ../scripts/alertes.py 2>&1 || true
               grep -E '"(open|new_this_run|closed_this_run|hors_liste_open|seconds|errors|failed_sources_count|error_rate|degraded)"|^agr|^erreur' ../run.log || true
               row=$(python -c 'import json,sys; m=json.load(open(sys.argv[1])); print("%s|%s|%s|%s|%s|%s|%s" % ("dégradé" if m.get("degraded") else "ok", str(m.get("seconds", "?")) + " s", m.get("open", "?"), m.get("new_this_run", "?"), m.get("closed_this_run", "?"), m.get("failed_sources_count", "?"), m.get("errors", "?")))' data/meta.json 2>/dev/null || echo "ok|?|?|?|?|?|?")
               case "$row" in dégradé*) degraded=$((degraded + 1)); echo "::warning title=passage $n dégradé::$(grep '^erreur' ../run.log | head -n 3 | tr '\n' ' ')";; esac
@@ -103,12 +96,14 @@ jobs:
             dur=$(( $(date +%s) - t0 ))
             if [ "$dur" -gt "$EVERY_S" ]; then slow=$((slow + 1)); fi
             echo "| $n | $(date -u +%H:%M) | $(echo "$row" | sed 's/|/ | /g') |" >> "$S"
-            export FORCE_RENDER=false FORCE_EXTRA=false
-            git add data/offers.json data/meta.json data/state.json data/a_revoir.json 2>/dev/null || true
+            # fichier par fichier : un seul chemin absent ferait échouer tout le « git add »
+            for f in offers.json offers-lite.json meta.json state.json a_revoir.json domaines.json historique.json alertes_envoyees.json details; do
+              if [ -e "data/$f" ]; then git add "data/$f"; fi
+            done
             if ! git diff --cached --quiet; then
               git commit -q -m "sync $(date -u +'%Y-%m-%d %H:%M')"
               ok=0
-              for i in 1 2 3 4 5 6; do if git pull -q --rebase -X theirs && git push -q; then ok=1; break; fi; sleep $((i * 5)); done
+              for i in 1 2 3 4 5 6; do if git pull -q --rebase --autostash -X theirs && git push -q; then ok=1; break; fi; sleep $((i * 5)); done
               if [ "$ok" = 0 ]; then push_fail=$((push_fail + 1)); echo "::warning title=envoi impossible::passage $n non enregistré dans le dépôt de données (réessayé au passage suivant)"; fi
             fi
             if [ "$streak" -ge 3 ]; then echo "::error::3 passages de suite en échec : arrêt de la boucle"; break; fi
