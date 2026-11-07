@@ -133,6 +133,8 @@ def reread_url(o):
     """Fiche complète d'après l'adresse de l'offre, quand elle pointe vers une plateforme à API (liens de Trackr, SimplifyJobs...)."""
     u = o.get('url') or ''
     last = u.split('?')[0].rstrip('/').rsplit('/', 1)[-1]
+    m = re.search(r'efinancialcareers\.[a-z.]+/.*\.id(\d+)', u)
+    if m: return ['efc', m.group(1) + '|' + (o.get('title') or '')]
     ats = detect_ats(u)
     try:
         if 'workday' in ats and '/job/' in u:
@@ -154,6 +156,35 @@ def reread_url(o):
     except Exception:
         return None
     return None
+
+
+def dates_text(offers):
+    """À chaque passage, pour chaque offre ouverte : début et durée relus dans le titre et les passages datés gardés (sans recharger la fiche)."""
+    for o in offers.values():
+        if o['status'] != 'open': continue
+        src = o.get('ctx') or o.get('excerpt') or ''
+        if not o.get('months') or o.get('months_src') == 'programme':
+            m = months_of(o['title']) or months_of(src)
+            if m and m <= 24: o['months'] = m; o['months_src'] = 'texte'
+        if not o.get('start') or o.get('start_src') == 'programme':
+            s = start_of(o['title']) or start_of(src, loose=False)
+            if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
+            elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
+        if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') == 'programme': o['start'] = None
+
+
+def dates_finish(offers):
+    """Après l'IA : dates conventionnelles des programmes (summer…), puis état « non précisé dans l'offre » quand la fiche a été lue en entier."""
+    for o in offers.values():
+        if o['status'] != 'open': continue
+        if not (o.get('start') or o.get('start_asap')) or not o.get('months'):
+            ps, pm = programme_dates(o.get('title'), o.get('contract'))
+            if ps and not (o.get('start') or o.get('start_asap')): o['start'] = ps; o['start_src'] = 'programme'
+            if pm and not o.get('months'): o['months'] = pm; o['months_src'] = 'programme'
+        lu = 'ctx' in o and not o.get('dk') and not o.get('dk_wait')  # fiche lue en entier (ou illisible après tous les essais)
+        for k, ok in (('start_na', o.get('start') or o.get('start_asap')), ('months_na', o.get('months'))):
+            if not ok and lu: o[k] = 1
+            else: o.pop(k, None)
 
 
 def m_key(m):
@@ -447,7 +478,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d')
 
 
 def write_lite(out, updated):
@@ -824,6 +855,15 @@ def main():
         if k: o['dk'] = k
         o['reread2'] = 1
 
+    # troisième rattrapage : offre sans début ou sans durée, lue avant que les passages datés soient gardés -> relue une fois
+    for o in offers.values():
+        if o['status'] != 'open' or 'ctx' in o or o.get('ctx_rr') or o.get('dk') or o.get('dk_wait'): continue
+        if o.get('months') and (o.get('start') or o.get('start_asap')): continue
+        k = reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
+        if k: o['dk'] = k
+        else: o['ctx'] = date_ctx(o['title'] + ' . ' + (o.get('excerpt') or ''), 600)
+        o['ctx_rr'] = 1
+
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
     new_set = set(new_ids)
     need = [offers[i] for i in new_ids if offers[i].get('dk') and not offers[i].get('initial')]
@@ -847,6 +887,7 @@ def main():
             if o['dk_fail'] >= 3:  # site qui bloque pour l'instant : nouvel essai dans 12 h, 4 fois au plus
                 if o.get('dk_round', 0) < 4: o['dk_wait'] = [o['dk'], (NOW + dt.timedelta(hours=12)).strftime('%Y-%m-%dT%H:%M:%SZ')]
                 o['dk_round'] = o.get('dk_round', 0) + 1; o.pop('dk', None); o.pop('dk_fail', None)
+                if o['dk_round'] > 4: o.setdefault('ctx', '')  # fiche illisible : on garde ce que l'API a donné
     try:
         with ThreadPoolExecutor(WORKERS) as ex: list(ex.map(fill, need))
     except Exception as e:
@@ -876,7 +917,7 @@ def main():
         # lieu : celui du poste (plateforme, fiche, « Lieu : … » dans le texte) ; la ville du siège n'est jamais recopiée
         if not o.get('location'): o['location'] = location_of(d)
         set_country(o, c)
-        if d: o['excerpt'] = d[:500]
+        if d: o['excerpt'] = d[:500]; o['ctx'] = date_ctx(o['title'] + ' . ' + d, 600)  # passages datés, relus à chaque passage
         classify(o, d)
     for o in list(offers.values()):
         if o['id'] in new_set or '_desc' in o:
@@ -913,11 +954,15 @@ def main():
     except Exception as e:
         err('liens des agrégateurs', e)
 
-    # option IA : complète le classement des nouvelles offres, jamais bloquant
+    try: dates_text(offers)
+    except Exception as e: err('dates (texte)', e)
+    # option IA : complète le classement des nouvelles offres et lit début et durée quand les règles n'ont rien trouvé, jamais bloquant
     try:
         ia.run(offers, texts, new_set, state)
     except Exception as e:
         err('classement IA', e)
+    try: dates_finish(offers)
+    except Exception as e: err('dates (fin)', e)
 
     n_dups = 0
     try:

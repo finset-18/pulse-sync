@@ -450,8 +450,54 @@ def _start_of(text, loose=True):
 
 
 def start_of(text, loose=True):
-    r = _start_of(text, loose)
+    r = _start_of(text, loose) or semester_start(text)
     return r if r and r >= NOW.strftime('%Y-%m') else None
+
+
+# « 1er semestre 2027 », « S2 2027 », « H1 2027 », « second half of 2027 » : début du semestre (année écrite obligatoire)
+SEM1 = re.compile(r"\b(?:s1|h1|1(?:er|st)\s+semest(?:re|er)|premier\s+semestre|first\s+(?:semester|half)|spring\s+semester)\s*(?:de\s+|of\s+|du\s+)?(20\d{2})\b", re.I)
+SEM2 = re.compile(r"\b(?:s2|h2|2(?:nd|e|ème|eme)\s+semest(?:re|er)|second\s+(?:semestre|semester|half)|fall\s+semester|autumn\s+semester)\s*(?:de\s+|of\s+|du\s+)?(20\d{2})\b", re.I)
+
+
+def semester_start(text):
+    t = text or ''
+    m1, m2 = SEM1.search(t), SEM2.search(t)
+    if m1 and (not m2 or m1.start() < m2.start()): return m1.group(1) + '-01'
+    if m2: return m2.group(1) + '-07'
+    return None
+
+
+# Programmes à dates fixes quand l'offre ne les écrit pas : un summer commence en juin et dure environ 10 semaines.
+# Valeurs marquées « estimées » (champ *_src = 'programme'), jamais confondues avec une date écrite dans l'offre.
+SUMMER_T = re.compile(r"\bsummer\b|stage\s+d['’]\s*[ée]t[ée]\b|\bestival|\bsommerpraktikum|\bverano\b", re.I)
+
+
+def programme_dates(title, contract):
+    t = title or ''
+    if contract == 'Summer' or SUMMER_T.search(t):
+        m = re.search(r'\b(20\d{2})\b', t)
+        y = int(m.group(1)) if m else (NOW.year + 1 if NOW.month >= 7 else NOW.year)
+        s = f'{y}-06'
+        return (s if s >= NOW.strftime('%Y-%m') else None), 2
+    return None, None
+
+
+# Passages de l'offre qui parlent de dates ou de durée : gardés avec l'offre pour relire les règles à chaque passage sans recharger la fiche
+DATE_HINT = re.compile(START_KW.pattern + r"|dur[ée]e|duration|length of|p[ée]riode|period|\b\d{1,2}\s*[- ]?(?:mois|months?|weeks?|semaines?)\b|semest|\b[hs][12]\s*20\d{2}|"
+                       r"\b(?:" + MONTH_RE + r")\b\.?\s*20\d{2}|\d{1,2}[/.]\d{1,2}[/.]20\d{2}|summer|off.?cycle|[ée]t[ée] 20\d{2}|\bsix\b|\btrois\b|\bthree\b", re.I)
+
+
+def date_ctx(text, n=900):
+    t = clean(text)
+    out, last = [], 0
+    for m in DATE_HINT.finditer(t):
+        a, b = max(last, m.start() - 60), min(len(t), m.end() + 90)
+        if b <= a: continue
+        if out and a == last: out[-1] += t[a:b]  # passages qui se touchent : un seul morceau
+        else: out.append(t[a:b])
+        last = b
+        if sum(len(x) for x in out) >= n: break
+    return ' … '.join(out)[:n]
 
 
 def start_asap(text):
@@ -1314,6 +1360,14 @@ def detail_text(kind, url):
         js = get(url).json()
         parts = [js.get('descriptionPlain') or ''] + [clean(x.get('content') or '') for x in js.get('lists') or []] + [js.get('additionalPlain') or '']
         return clean(' '.join(parts)), None, (js.get('categories') or {}).get('location') or '', None
+    if kind == 'efc':  # fiche eFinancialCareers : sa page bloque les robots, son API de recherche donne la description complète
+        jid, title = url.split('|', 1)
+        for q in dict.fromkeys([title.split(' - ')[0][:80], title[:80]]):
+            js = get('https://job-search-api.efinancialcareers.com/v1/efc/jobs/search', params={'q': q, 'page': 1, 'pageSize': 50, 'language': 'en'}).json()
+            for j in js.get('data') or []:
+                if str(j.get('jobId')) == jid and (j.get('description') or j.get('summary')):
+                    return clean(j.get('description') or j.get('summary')), None, (j.get('jobLocation') or {}).get('displayName') or '', None  # fin d'annonce eFC : pas une date limite
+        raise RuntimeError('offre eFinancialCareers introuvable dans l\'API')
     r = get(url); h = r.text
     lds = jsonld_jobs(h, url)
     if lds:

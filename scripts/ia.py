@@ -56,7 +56,9 @@ def apply(o, r):
         elif 'front' in r: o.pop('front', None)
     if 'contract' in r: o['contract'] = r['contract']; o['contract_src'] = 'ia'
     for k in ('start', 'months', 'langs'):
-        if k in r and not o.get(k): o[k] = r[k]
+        if k in r and (not o.get(k) or o.get(k + '_src') == 'programme'):  # une date lue par l'IA passe avant une date de programme estimée
+            o[k] = r[k]
+            if k != 'langs': o[k + '_src'] = 'ia'; o.pop('start_asap', None) if k == 'start' else None
 
 
 LAST = {}  # bilan du passage, repris dans meta.json
@@ -66,22 +68,27 @@ def run(offers, texts, new_ids, state=None):
     LAST.clear()
     key = os.environ.get('ANTHROPIC_API_KEY')
     if not key: return 0
-    budget, secs = int(os.environ.get('IA_MAX', '40')), float(os.environ.get('IA_BUDGET_S', '25'))
+    budget, secs = int(os.environ.get('IA_MAX', '70')), float(os.environ.get('IA_BUDGET_S', '30'))
     # plafond quotidien, gardé d'un passage à l'autre dans state.json
     day = dt.datetime.now(dt.timezone.utc).date().isoformat()
     jour = (state if state is not None else {}).setdefault('ia_day', {'d': day, 'n': 0})
     if jour.get('d') != day: jour.update(d=day, n=0)
-    budget = min(budget, max(0, int(os.environ.get('IA_MAX_DAY', '500')) - jour.get('n', 0)))
+    budget = min(budget, max(0, int(os.environ.get('IA_MAX_DAY', '1500')) - jour.get('n', 0)))
     since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).isoformat()[:19]
     todo = [o for o in offers.values() if o.get('status') == 'open' and not o.get('ia') and not o.get('initial') and (o['id'] in new_ids or (o.get('first_seen') or '') >= since)]
     todo.sort(key=lambda o: (o['id'] not in new_ids, o.get('first_seen') or ''), reverse=False)
-    todo = todo[:budget]
+    # puis les offres ouvertes encore sans début ou sans durée (écrits nulle part d'après les règles) : l'IA relit leurs passages datés, une fois
+    seen = {o['id'] for o in todo}
+    dates = [o for o in offers.values() if o.get('status') == 'open' and o['id'] not in seen and not o.get('ia_d') and o.get('ctx')
+             and (not (o.get('start') or o.get('start_asap')) or not o.get('months') or o.get('start_src') == 'programme' or o.get('months_src') == 'programme')]
+    dates.sort(key=lambda o: o.get('first_seen') or '', reverse=True)
+    todo = (todo + dates)[:budget]
     t0, done, fails = time.time(), 0, [0]
 
     def one(o):
         if time.time() - t0 > secs or fails[0] >= 3: return None  # budget épuisé ou API en panne : les règles restent en place
         try:
-            return o, checked(ask(key, o, texts.get(o['id']) or o.get('excerpt') or ''))
+            return o, checked(ask(key, o, texts.get(o['id']) or o.get('ctx') or o.get('excerpt') or ''))
         except Exception:
             fails[0] += 1
             return None
@@ -89,7 +96,8 @@ def run(offers, texts, new_ids, state=None):
         for res in ex.map(one, todo):
             if not res: continue
             o, r = res
-            o['ia'] = 1
+            if o.get('ia'): o['ia_d'] = 1  # déjà classée : passage de lecture des dates
+            o['ia'] = 1; o['ia_d'] = 1
             jour['n'] = jour.get('n', 0) + 1
             if r: apply(o, r); done += 1
     LAST.update(classees=done, pannes=fails[0], jour=jour.get('n', 0))
