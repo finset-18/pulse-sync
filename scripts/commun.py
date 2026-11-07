@@ -1366,17 +1366,47 @@ def detail_text(kind, url):
             js = get('https://job-search-api.efinancialcareers.com/v1/efc/jobs/search', params={'q': q, 'page': 1, 'pageSize': 50, 'language': 'en'}).json()
             for j in js.get('data') or []:
                 if str(j.get('jobId')) == jid and (j.get('description') or j.get('summary')):
-                    return clean(j.get('description') or j.get('summary')), None, (j.get('jobLocation') or {}).get('displayName') or '', None  # fin d'annonce eFC : pas une date limite
+                    txt = clean(j.get('description') or j.get('summary'))
+                    official = efc_official(j.get('id'))
+                    if official:  # la fiche de l'employeur donne souvent la date de début que la copie eFC n'a pas
+                        try: txt += ' . ' + detail_text('page', official)[0][:6000]
+                        except Exception: pass
+                    return txt, None, (j.get('jobLocation') or {}).get('displayName') or '', None  # fin d'annonce eFC : pas une date limite
         raise RuntimeError('offre eFinancialCareers introuvable dans l\'API')
     r = get(url); h = r.text
     lds = jsonld_jobs(h, url)
+    hidden = data_dates(h)  # date de début rangée dans les données de la page (WTTJ, schema.org jobStartDate…) et pas dans le texte
     if lds:
         l = lds[0]
         sl = _start_line(clean(re.sub(r'(?is)<(script|style)[^>]*>.*?</\1>', ' ', h))) if l['desc'] and not START_KW.search(l['desc']) else ''  # date de début affichée hors du JSON-LD
-        return (l['desc'] or clean(h)[:6000]) + ' ' + l.get('commit', '') + ' ' + sl, l.get('deadline'), l.get('location', ''), l.get('posted')
+        return (l['desc'] or clean(h)[:6000]) + ' ' + l.get('commit', '') + ' ' + sl + hidden, l.get('deadline'), l.get('location', ''), l.get('posted')
     body = clean(re.sub(r'(?is)<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ', h))[:8000]
     if bad_page(body): raise RuntimeError('page de blocage ou de maintenance au lieu de la fiche')  # relue plus tard, jamais gardée comme texte
-    return body, None, '', None
+    return body + hidden, None, '', None
+
+
+# clés de date de début des données de page ; « startDate » seul est exclu (date de publication chez Workday, d'événement ailleurs)
+DATA_START = re.compile(r'''\\?["'](?:jobStartDate|job_start_date|start_date|contractStartDate|contract_start_date|internshipStartDate|desiredStartDate|dateDebut|date_debut|startingDate)\\?["']\s*:\s*\\?["'](20\d\d)-(\d\d)''')
+
+
+def data_dates(h):
+    """Phrase « Date de début … » tirée des données de la page ; une date déjà passée sur une offre ouverte veut dire « dès que possible »."""
+    m = DATA_START.search(h or '')
+    if not m: return ''
+    y, mo = m.group(1), m.group(2)
+    if f'{y}-{mo}' < NOW.strftime('%Y-%m'): return ' . Date de début : dès que possible.'
+    return f' . Date de début : {mo}/{y}.'
+
+
+def efc_official(eid):
+    """Lien de l'offre chez l'employeur, donné par l'API publique de candidature d'eFinancialCareers."""
+    if not eid: return ''
+    try:
+        js = get(f'https://job-application.efinancialcareers.com/v1/jobs/{eid}/apply-information').json().get('data') or {}
+        u = js.get('external_job_application_url') or ''
+        return u if direct_ok(u) else ''
+    except Exception:
+        return ''
 
 
 # ---------------------------------------------------------------- sitemap du site carrières

@@ -47,6 +47,7 @@ WTTJ_Q = ('finance', 'M&A', 'fusions acquisitions', 'private equity', 'capital i
 TAL = (('morganstanley', 1, 'Morgan Stanley'), ('morganstanley', 2, 'Morgan Stanley'), ('blackrock', 1, 'BlackRock'))
 JS_CITY = {'NYC': 'New York, United States', 'LDN': 'London, United Kingdom', 'HKG': 'Hong Kong', 'SGP': 'Singapore', 'ATX': 'Austin, United States',
            'CHI': 'Chicago, United States', 'AMS': 'Amsterdam, Netherlands'}
+SEASON_MONTH = {'winter': '01', 'spring': '01', 'summer': '06', 'fall': '09'}  # début habituel des stages américains par saison
 SIMPLIFY = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json'
 MUSE = 'https://www.themuse.com/api/public/jobs'
 
@@ -237,8 +238,15 @@ def s_simplify():
             continue
         locs = [str(x) for x in j.get('locations') or []]
         loc = next((x for x in locs if country_of(x)), locs[0] if locs else '')
-        out.append(row('simplify', j.get('company_name'), j.get('title'), j['url'], loc, iso(j.get('date_posted')), j.get('id'),
-                       trust=str(j.get('category')) in ('Quant', 'Quantitative Finance'), csite=j.get('company_url') or ''))
+        x = row('simplify', j.get('company_name'), j.get('title'), j['url'], loc, iso(j.get('date_posted')), j.get('id'),
+                trust=str(j.get('category')) in ('Quant', 'Quantitative Finance'), csite=j.get('company_url') or '')
+        # saison donnée par la plateforme (« Summer 2027 », « Fall 2026 ») : mois de début habituel de la saison, marqué « saison »
+        for t in j.get('terms') or []:
+            m = re.match(r'(Winter|Spring|Summer|Fall)\s+(20\d\d)$', str(t).strip(), re.I)
+            if m:
+                x['start'] = m.group(2) + '-' + SEASON_MONTH[m.group(1).lower()]; x['start_src'] = 'saison'
+                break
+        out.append(x)
     return out
 
 

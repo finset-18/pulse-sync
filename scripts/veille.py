@@ -166,19 +166,19 @@ def dates_text(offers):
         if not o.get('months') or o.get('months_src') == 'programme':
             m = months_of(o['title']) or months_of(src)
             if m and m <= 24: o['months'] = m; o['months_src'] = 'texte'
-        if not o.get('start') or o.get('start_src') == 'programme':
+        if not o.get('start') or o.get('start_src') in ('programme', 'saison'):
             s = start_of(o['title']) or start_of(src, loose=False)
             if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
             elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
-        if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') == 'programme': o['start'] = None
+        if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') in ('programme', 'saison'): o['start'] = None
     # dates lues par le modèle local (job « dates ») : seulement là où rien d'écrit n'a été trouvé, ou à la place d'une estimation
     lu = load('dates_ia.json', {}) or {}
     for oid, r in lu.items():
         o = offers.get(oid)
         if not o or o['status'] != 'open' or not isinstance(r, dict): continue
-        if r.get('start') and r['start'] >= NOW.strftime('%Y-%m') and (not o.get('start') or o.get('start_src') == 'programme') and not o.get('start_asap'):
+        if r.get('start') and r['start'] >= NOW.strftime('%Y-%m') and (not o.get('start') or o.get('start_src') in ('programme', 'saison')) and not o.get('start_asap'):
             o['start'] = r['start']; o['start_src'] = 'ia'
-        elif r.get('asap') and (not o.get('start') or o.get('start_src') == 'programme'):
+        elif r.get('asap') and (not o.get('start') or o.get('start_src') in ('programme', 'saison')):
             o['start'] = None; o.pop('start_src', None); o['start_asap'] = 1
         if r.get('months') and (not o.get('months') or o.get('months_src') == 'programme'):
             o['months'] = r['months']; o['months_src'] = 'ia'
@@ -489,7 +489,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr')
 
 
 def write_lite(out, updated):
@@ -757,7 +757,9 @@ def main():
                 if (o.get('last_seen') or '') <= FRESH: o['last_seen'] = NOW_ISO
                 if (not o.get('site') or NOLOGO_HOST.search(host_of(o['site']) + '.')) and official_site(c): o['site'] = official_site(c)
                 if x.get('logo') and not o.get('logo'): o['logo'] = x['logo']
-                if x.get('start') and not o.get('start'): o['start'] = x['start']
+                if x.get('start') and (not o.get('start') or o.get('start_src') in ('programme', 'saison')):
+                    o['start'] = x['start']
+                    if x.get('start_src'): o['start_src'] = x['start_src']
                 if x.get('months') and not o.get('months'): o['months'] = x['months']
                 if x.get('src') in PLUS and x.get('desc') and not o.get('txt2') and not (o.get('months') and o.get('start')):
                     o['_desc'] = x['desc']; o['txt2'] = 1  # texte complet reçu une fois pour retrouver durée et début
@@ -773,6 +775,7 @@ def main():
             if direct: o['url_agg'] = x['url']; url_idx[x['url']] = o
             if x.get('logo'): o['logo'] = x['logo']  # logo de l'entreprise fourni par l'agrégateur
             if x.get('start'): o['start'] = x['start']
+            if x.get('start_src'): o['start_src'] = x['start_src']
             if x.get('months'): o['months'] = x['months']  # durée calculée d'après les dates de début et de fin de l'API
             if x.get('trust'): o['trust'] = 1  # source 100 % finance : jamais écartée pour son intitulé
             if x.get('detail') and len(x.get('desc') or '') < 600: o['dk'] = list(x['detail'])
@@ -875,6 +878,14 @@ def main():
         else: o['ctx'] = date_ctx(o['title'] + ' . ' + (o.get('excerpt') or ''), 600)
         o['ctx_rr'] = 1
 
+    # quatrième rattrapage : offre sans début dont le texte venait d'une API (WTTJ, eFC, Trackr…) -> la fiche elle-même est lue une fois
+    for o in offers.values():
+        if o['status'] != 'open' or o.get('page_rr') or o.get('dk') or o.get('dk_wait'): continue
+        if (o.get('start') and o.get('start_src') not in ('programme', 'saison')) or o.get('start_asap'): continue
+        k = reread_url(o) or (['page', o['url']] if str(o.get('url')).startswith('http') else None)
+        if k: o['dk'] = k
+        o['page_rr'] = 1
+
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
     new_set = set(new_ids)
     need = [offers[i] for i in new_ids if offers[i].get('dk') and not offers[i].get('initial')]
@@ -916,7 +927,9 @@ def main():
         o['months'] = months_of(o['title']) or months_of(d) or o.get('months') or None
         if o['months'] and o['months'] > 24: o['months'] = None
         old_start = o.get('start') if (o.get('start') or '') >= NOW.strftime('%Y-%m') else None
-        o['start'] = start_of(o['title']) or start_of(d, loose=False) or old_start or None
+        found = start_of(o['title']) or start_of(d, loose=False)
+        if found and found != o.get('start'): o['start_src'] = 'texte'  # date écrite : remplace une saison ou une estimation
+        o['start'] = found or old_start or None
         dl = o.get('deadline')
         o['deadline'] = (str(dl)[:10] if dl and re.match(r'20\d{2}-\d{2}-\d{2}', str(dl)) else None) or deadline_of(d)
         if o['deadline'] and o['deadline'] == o.get('dl_no'): o['deadline'] = None  # date déjà démentie par l'annonce restée en ligne
