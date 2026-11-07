@@ -1,0 +1,77 @@
+name: dates
+
+# Lecture des dates sans API : petit modèle ouvert lancé sur le runner (llama.cpp), pris dans la release « dates-modele ».
+# Il ne touche pas aux offres : il écrit data/dates_ia.json, que le job sync reprend à son passage suivant.
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dates
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        env:
+          R: ${{ secrets.DATA_REPO }}
+          T: ${{ secrets.DATA_TOKEN }}
+        run: '[ -n "$R" ] && [ -n "$T" ] || { echo "missing DATA_REPO / DATA_TOKEN secrets"; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests==2.32.3
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: m
+          key: dates-modele-${{ hashFiles('.github/workflows/dates.yml') }}-v1
+      - name: modele
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p m && cd m
+          gh release download dates-modele -R "$GITHUB_REPOSITORY" -p modele.gguf -p modele.sha256 -p moteur.tar.gz
+          sha256sum -c modele.sha256
+          tar -xzf moteur.tar.gz && rm moteur.tar.gz
+      - name: serveur
+        run: |
+          export LD_LIBRARY_PATH="$PWD/m:$LD_LIBRARY_PATH"
+          nohup ./m/llama-server -m m/modele.gguf -t 4 -c 2048 --port 8089 > srv.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf localhost:8089/health > /dev/null && exit 0; sleep 2; done
+          tail -n 20 srv.log | cut -c1-200; exit 1
+      - name: lecture
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+          DATES_BUDGET_S: "2700"
+        run: |
+          python scripts/dates_local.py > run.log 2>&1; s=$?
+          grep '^dates' run.log | tail -n 3 | cut -c1-300
+          [ $s -eq 0 ] || tail -n 15 run.log | grep -v '^dates' | cut -c1-200
+          exit $s
+      - name: save
+        if: always()
+        working-directory: store
+        run: |
+          [ -f data/dates_ia.json ] || exit 0
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add data/dates_ia.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "dates $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase --autostash -X theirs && git push -q && exit 0; sleep $((i * 7)); done
+          exit 1
