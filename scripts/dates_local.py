@@ -66,6 +66,7 @@ def months_written(text, n):
 def main():
     doc = load('offers.json') or {}
     offers = doc.get('offers') or {}
+    if isinstance(offers, list): offers = {o['id']: o for o in offers if isinstance(o, dict) and o.get('id')}  # offers.json : liste d'offres
     res = load('dates_ia.json', {}) or {}
     res = {k: v for k, v in res.items() if k in offers and offers[k].get('status') == 'open'}  # offres fermées : oubliées
     todo = []
