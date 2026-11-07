@@ -59,9 +59,10 @@ jobs:
           DATA_DIR: ${{ github.workspace }}/store/data
           DATES_BUDGET_S: "2700"
         run: |
-          python scripts/dates_local.py > run.log 2>&1; s=$?
-          grep '^dates' run.log | tail -n 3 | cut -c1-300
-          [ $s -eq 0 ] || tail -n 15 run.log | grep -v '^dates' | cut -c1-200
+          s=0; python scripts/dates_local.py > run.log 2>&1 || s=$?
+          grep '^dates' run.log | tail -n 3 | cut -c1-300 || true
+          # en cas d'erreur : seulement les lignes de la trace Python (jamais le texte des offres)
+          [ $s -eq 0 ] || grep -E '^(Traceback|  File |[A-Za-z]+(Error|Exception))' run.log | tail -n 12 | cut -c1-200
           exit $s
       - name: save
         if: always()
