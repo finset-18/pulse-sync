@@ -1,0 +1,56 @@
+name: modele
+
+# Une seule fois (ou pour changer de modèle) : récupère le modèle de lecture des dates et le moteur llama.cpp,
+# puis les range dans la release « dates-modele » de ce dépôt. Le job « dates » ne télécharge ensuite que depuis cette release :
+# il ne dépend plus de Hugging Face ni des publications de llama.cpp.
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: "Fichier GGUF du modèle (licence libre)"
+        default: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+      llama_tag:
+        description: "Version de llama.cpp (vide = dernière)"
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: modele
+        run: |
+          curl -fsSL --retry 3 -o modele.gguf "${{ inputs.model_url }}"
+          ls -l modele.gguf
+          sha256sum modele.gguf | tee modele.sha256
+      - name: moteur
+        run: |
+          tag="${{ inputs.llama_tag }}"
+          [ -n "$tag" ] || tag=$(gh api repos/ggml-org/llama.cpp/releases/latest --jq .tag_name)
+          asset=$(gh api "repos/ggml-org/llama.cpp/releases/tags/$tag" --jq '.assets[].name' | grep -E 'bin-ubuntu-x64\.(zip|tar\.gz)$' | head -n 1)
+          [ -n "$asset" ] || { echo "binaire Linux introuvable pour $tag"; exit 1; }
+          gh release download "$tag" -R ggml-org/llama.cpp -p "$asset"
+          mkdir x && case "$asset" in *.zip) unzip -q "$asset" -d x ;; *) tar -xzf "$asset" -C x ;; esac
+          srv=$(find x -type f -name llama-server | head -n 1)
+          [ -n "$srv" ] || { echo "llama-server absent de $asset"; exit 1; }
+          d=$(dirname "$srv"); tar -czf moteur.tar.gz -C "$d" .
+          echo "$tag $asset" > moteur.version; cat moteur.version
+      - name: essai
+        run: |
+          mkdir m && tar -xzf moteur.tar.gz -C m
+          export LD_LIBRARY_PATH="$PWD/m:$LD_LIBRARY_PATH"
+          ./m/llama-server -m modele.gguf -t 4 -c 2048 --port 8089 > srv.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:8089/health > /dev/null && break; sleep 2; done
+          curl -sf localhost:8089/health || { tail -n 30 srv.log; exit 1; }
+          time curl -s localhost:8089/completion -H 'Content-Type: application/json' \
+            -d '{"prompt":"<|im_start|>user\nInternship starting in September 2027 for six months. Give start (YYYY-MM) and months as JSON.<|im_end|>\n<|im_start|>assistant\n","n_predict":40,"temperature":0,"json_schema":{"type":"object","properties":{"start":{"type":["string","null"]},"months":{"type":["integer","null"]}},"required":["start","months"]}}' | head -c 400
+      - name: release
+        run: |
+          gh release view dates-modele -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create dates-modele -R "$GITHUB_REPOSITORY" --title "Modèle de lecture des dates" --notes "Modèle (Qwen2.5 1.5B Instruct, Apache 2.0) et moteur llama.cpp utilisés par le job dates. Ne pas supprimer."
+          gh release upload dates-modele -R "$GITHUB_REPOSITORY" --clobber modele.gguf modele.sha256 moteur.tar.gz moteur.version
