@@ -1317,9 +1317,74 @@ def detail_text(kind, url):
     r = get(url); h = r.text
     lds = jsonld_jobs(h, url)
     if lds:
-        l = lds[0]; return (l['desc'] or clean(h)[:6000]) + ' ' + l.get('commit', ''), l.get('deadline'), l.get('location', ''), l.get('posted')
-    body = re.sub(r'(?is)<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ', h)
-    return clean(body)[:8000], None, '', None
+        l = lds[0]
+        sl = _start_line(clean(re.sub(r'(?is)<(script|style)[^>]*>.*?</\1>', ' ', h))) if l['desc'] and not START_KW.search(l['desc']) else ''  # date de début affichée hors du JSON-LD
+        return (l['desc'] or clean(h)[:6000]) + ' ' + l.get('commit', '') + ' ' + sl, l.get('deadline'), l.get('location', ''), l.get('posted')
+    body = clean(re.sub(r'(?is)<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ', h))[:8000]
+    if bad_page(body): raise RuntimeError('page de blocage ou de maintenance au lieu de la fiche')  # relue plus tard, jamais gardée comme texte
+    return body, None, '', None
+
+
+# ---------------------------------------------------------------- sitemap du site carrières
+# Sites dont la recherche d'offres ne marche qu'en JavaScript (Société Générale…) : le sitemap liste toutes les fiches,
+# chaque fiche est lue une seule fois (titre, contrat, lieu, date de début écrite sur la page) puis gardée en cache.
+SITEMAP_NEW_MAX = int(os.environ.get('SITEMAP_NEW_MAX', '60'))  # fiches nouvelles lues par passage et par site
+SITEMAP_BUDGET_S = float(os.environ.get('SITEMAP_BUDGET_S', '25'))
+
+
+def j_sitemap(c, m):
+    import time as _t
+    pat = re.compile(m.get('pat') or r'/(?:offres?-d-emploi|emplois?|jobs?|careers?|postes?)/[^/]+', re.I)
+    xml = get(m['url']).text
+    urls = []
+    for u in re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', xml):
+        u = html.unescape(u)
+        if pat.search(u) and u not in urls: urls.append(u)
+    if not urls: raise RuntimeError('sitemap sans fiche d\'offre')
+    keep = set(urls)
+    name = f"sitemaps/{c['id']}.json"
+    cache = {u: v for u, v in (load(name, {}) or {}).items() if u in keep}  # fiches retirées du sitemap : oubliées
+    todo = [u for u in urls if u not in cache][:SITEMAP_NEW_MAX]
+    t0 = _t.time()
+    for u in todo:
+        if _t.time() - t0 > SITEMAP_BUDGET_S: break
+        try:
+            h = get(u).text
+            body = clean(re.sub(r'(?is)<(script|style|nav|footer)[^>]*>.*?</\1>', ' ', h))[:8000]
+            if bad_page(body): continue  # site qui bloque : relue au passage suivant
+            lds = jsonld_jobs(h, u)
+            l = lds[0] if lds else {}
+            title = l.get('title') or clean((re.search(r'(?is)<h1[^>]*>(.*?)</h1>', h) or re.search(r'(?is)<title>(.*?)</title>', h) or [None, ''])[1])
+            if not title: continue
+            desc = l.get('desc') or body
+            cache[u] = {'title': title[:200], 'commit': l.get('commit') or '', 'location': l.get('location') or '', 'posted': l.get('posted'),
+                        'deadline': l.get('deadline'), 'start': start_of(body, loose=False), 'months': months_of(desc) or months_of(body),
+                        'desc': (desc[:2500] + ' ' + _start_line(body)).strip()}
+        except Exception:
+            continue
+    save(name, cache)
+    out = Partial() if any(u not in cache for u in urls) else []
+    for u, v in cache.items():
+        if v: out.append({'title': v['title'], 'url': u, 'location': v['location'], 'posted': v['posted'], 'deadline': v['deadline'],
+                          'commit': v['commit'], 'desc': v['desc'], 'start': v['start'], 'months': v['months'], 'ext': u})
+    return out
+
+
+def _start_line(body):
+    """Phrase « Date de début … » de la page, gardée avec la description (le JSON-LD ne la donne pas toujours)."""
+    m = START_KW.search(body or '')
+    return body[m.start():m.start() + 60] if m else ''
+
+
+# page servie à la place de la fiche (maintenance, anti-robot, erreur) : ce n'est pas le texte de l'offre
+BAD_PAGE = re.compile(r"system maintenance|scheduled maintenance|currently undergoing|maintenance (?:en cours|programm)|try again later|r[ée]essayez plus tard|"
+                      r"just a moment|checking your browser|verify(?:ing)? you are (?:a )?human|are you a robot|captcha|access denied|acc[èe]s refus[ée]|"
+                      r"request blocked|unusual traffic|too many requests|enable javascript|activez javascript|attention required|cloudflare ray id", re.I)
+
+
+def bad_page(text):
+    t = text or ''
+    return len(t) < 200 or (len(t) < 2500 and bool(BAD_PAGE.search(t[:1500])))  # une vraie fiche est plus longue
 
 
 # ---------------------------------------------------------------- liens des agrégateurs

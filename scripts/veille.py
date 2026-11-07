@@ -174,6 +174,8 @@ def run_method(c, m):
         r = get(m['url']); return page_jobs(c, r.text, r.url)
     if k == 'watch':
         r = get(m['url']); return mentions(r.text, r.url) + page_jobs(c, r.text, r.url)
+    if k == 'sitemap':
+        return j_sitemap(c, m)
     raise ValueError(k)
 
 
@@ -445,7 +447,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix')
 
 
 def write_lite(out, updated):
@@ -793,6 +795,15 @@ def main():
         # date de début égale au mois de la date limite : souvent la date limite lue comme début -> relue une fois
         if not o.get('start_fix') and o.get('start') and o.get('deadline') and o['start'] == str(o['deadline'])[:7] and o.get('via') != 'wttj_search':
             o['start'] = None; o['start_fix'] = 1; o.pop('reread2', None)
+        # fiche lue alors que le site renvoyait une page de maintenance ou anti-robot : ce texte est effacé et la fiche relue
+        if not o.get('bad_fix') and o.get('excerpt') and BAD_PAGE.search(o['excerpt'][:300]):
+            o.pop('excerpt', None); o['bad_fix'] = 1
+            if not (o.get('months') and o.get('start')) and o.get('url', '').startswith('http') and not o.get('dk'):
+                o['dk'] = reread_url(o) or ['page', o['url']]
+        # lecture en attente après un blocage : on retente quand le délai est passé
+        if o.get('dk_wait') and not o.get('dk') and o['dk_wait'][1] <= NOW_ISO:
+            if not (o.get('months') and o.get('start')): o['dk'] = o['dk_wait'][0]
+            o.pop('dk_wait', None)
 
     # rattrapage : les offres ouvertes sans durée sont relues une fois en entier (description complète)
     ats_of = {}
@@ -833,7 +844,9 @@ def main():
             o.pop('dk', None)
         except Exception:
             o['dk_fail'] = o.get('dk_fail', 0) + 1
-            if o['dk_fail'] >= 3: o.pop('dk', None)
+            if o['dk_fail'] >= 3:  # site qui bloque pour l'instant : nouvel essai dans 12 h, 4 fois au plus
+                if o.get('dk_round', 0) < 4: o['dk_wait'] = [o['dk'], (NOW + dt.timedelta(hours=12)).strftime('%Y-%m-%dT%H:%M:%SZ')]
+                o['dk_round'] = o.get('dk_round', 0) + 1; o.pop('dk', None); o.pop('dk_fail', None)
     try:
         with ThreadPoolExecutor(WORKERS) as ex: list(ex.map(fill, need))
     except Exception as e:
