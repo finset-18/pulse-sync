@@ -171,6 +171,17 @@ def dates_text(offers):
             if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
             elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
         if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') == 'programme': o['start'] = None
+    # dates lues par le modèle local (job « dates ») : seulement là où rien d'écrit n'a été trouvé, ou à la place d'une estimation
+    lu = load('dates_ia.json', {}) or {}
+    for oid, r in lu.items():
+        o = offers.get(oid)
+        if not o or o['status'] != 'open' or not isinstance(r, dict): continue
+        if r.get('start') and r['start'] >= NOW.strftime('%Y-%m') and (not o.get('start') or o.get('start_src') == 'programme') and not o.get('start_asap'):
+            o['start'] = r['start']; o['start_src'] = 'ia'
+        elif r.get('asap') and (not o.get('start') or o.get('start_src') == 'programme'):
+            o['start'] = None; o.pop('start_src', None); o['start_asap'] = 1
+        if r.get('months') and (not o.get('months') or o.get('months_src') == 'programme'):
+            o['months'] = r['months']; o['months_src'] = 'ia'
 
 
 def dates_finish(offers):
