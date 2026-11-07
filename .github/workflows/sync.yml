@@ -97,7 +97,7 @@ jobs:
             if [ "$dur" -gt "$EVERY_S" ]; then slow=$((slow + 1)); fi
             echo "| $n | $(date -u +%H:%M) | $(echo "$row" | sed 's/|/ | /g') |" >> "$S"
             # fichier par fichier : un seul chemin absent ferait échouer tout le « git add »
-            for f in offers.json offers-lite.json meta.json state.json a_revoir.json domaines.json historique.json alertes_envoyees.json details; do
+            for f in offers.json offers-lite.json meta.json state.json a_revoir.json domaines.json historique.json alertes_envoyees.json details sitemaps; do
               if [ -e "data/$f" ]; then git add "data/$f"; fi
             done
             if ! git diff --cached --quiet; then
