@@ -441,6 +441,15 @@ def _start_of(text, loose=True):
         if END_GAP.search(gap) or len(gap) > 30: continue
         y, mo = f(m)
         if 1 <= mo <= 12: return f"{y}-{mo:02d}"
+    # 2b. date suivie du mot de début (« for a September 2027 start », « janvier 2027 intake »)
+    for m in re.finditer(r'\b(' + MONTH_RE + r')\.?\s*(20\d{2})\s*(?:start(?:ing)?|start date|intake|entry|cohort)\b', t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]): continue
+        return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
+    # 2c. date juste après le nom du stage (« Stage de 6 mois – janvier 2027 », « Internship (June 2027) »), sans mot de fin ou de candidature entre les deux
+    for m in re.finditer(r"\b(?:stage|stagiaire|internship|intern|placement|off[- ]?cycle|alternance|apprentissage|apprenticeship|v\.?i\.?e)\b([^.\n;]{0,40}?)\b(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
+        gap = m.group(1)
+        if END_GAP.search(gap) or WINDOW_CTX.search(gap) or WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]): continue
+        return f"{m.group(3)}-{MONTHS[m.group(2)]:02d}"
     if not loose: return None
     # 3. titre : « Stage M&A – janvier 2027 » (mais pas « Clôture 15 janvier 2027 »)
     for m in re.finditer(r'\b(' + MONTH_RE + r')\.?\s+(20\d{2})', t):
@@ -454,10 +463,29 @@ def start_of(text, loose=True):
     return r if r and r >= NOW.strftime('%Y-%m') else None
 
 
+def title_range(title):
+    """« 2027 … Off Cycle Internship, July - September » : période du titre sans année, avec la seule année écrite dans le titre."""
+    t = (title or '').lower()
+    ys = set(re.findall(r'\b(20\d{2})\b', t))
+    if len(ys) != 1: return None, None
+    y = int(ys.pop())
+    m = re.search(r'\b(' + MONTH_RE + r')\.?' + RANGE_SEP + r'(' + MONTH_RE + r')\b', t)
+    if not m or WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]): return None, None
+    a, b = MONTHS[m.group(1)], MONTHS[m.group(2)]
+    y2 = y if b >= a else y + 1
+    n = _months_between(y, a, y2, b)
+    s = f"{y}-{a:02d}"
+    return (s if s >= NOW.strftime('%Y-%m') else None), n
+
+
+def months_with_title(title, text):
+    return months_of(title) or title_range(title)[1] or months_of(text)
+
+
 def start_with_title(title, text):
     """Début écrit dans le titre, sinon dans le texte. Quand le texte écrit un mois avec une année déjà passée
     (« débutera en mars-avril 2026 ») alors que le titre annonce une seule année à venir (« Stage 2027 »), c'est le mois du texte avec l'année du titre."""
-    r = start_of(title) or start_of(text, loose=False)
+    r = start_of(title) or title_range(title)[0] or start_of(text, loose=False)
     if r: return r
     raw = _start_of(text or '', loose=False)
     ys = set(re.findall(r'\b(20\d{2})\b', title or ''))
