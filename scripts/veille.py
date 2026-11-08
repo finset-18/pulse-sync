@@ -21,6 +21,7 @@ from commun import *  # noqa
 from taxonomie import metier_of, front_of, famx_of, langs_of, contact_of, norm as tnorm
 
 SCHEMA = 2
+DATES_V = 2  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
 MAX_DETAILS = int(os.environ.get('MAX_DETAILS', '800'))
@@ -167,7 +168,7 @@ def dates_text(offers):
             m = months_of(o['title']) or months_of(src)
             if m and m <= 24: o['months'] = m; o['months_src'] = 'texte'
         if not o.get('start') or o.get('start_src') in ('programme', 'saison'):
-            s = start_of(o['title']) or start_of(src, loose=False)
+            s = start_with_title(o['title'], src)
             if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
             elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
         if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') in ('programme', 'saison'): o['start'] = None
@@ -192,7 +193,7 @@ def dates_finish(offers):
             ps, pm = programme_dates(o.get('title'), o.get('contract'))
             if ps and not (o.get('start') or o.get('start_asap')): o['start'] = ps; o['start_src'] = 'programme'
             if pm and not o.get('months'): o['months'] = pm; o['months_src'] = 'programme'
-        lu = 'ctx' in o and not o.get('dk') and not o.get('dk_wait')  # fiche lue en entier (ou illisible après tous les essais)
+        lu = o.get('full') and not o.get('dk') and not o.get('dk_wait')  # fiche complète lue (un résumé d'API ou une fiche illisible ne suffit pas)
         for k, ok in (('start_na', o.get('start') or o.get('start_asap')), ('months_na', o.get('months'))):
             if not ok and lu: o[k] = 1
             else: o.pop(k, None)
@@ -489,7 +490,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v')
 
 
 def write_lite(out, updated):
@@ -886,6 +887,16 @@ def main():
         if k: o['dk'] = k
         o['page_rr'] = 1
 
+    # cinquième rattrapage (règles de dates v2) : toute offre ouverte sans début écrit ou sans durée, dont la fiche complète n'a pas été lue,
+    # est relue une fois (les offres « non précisé » d'avant venaient souvent d'un résumé d'API, pas de la fiche)
+    for o in offers.values():
+        if o['status'] != 'open' or o.get('rr_v', 0) >= DATES_V or o.get('dk') or o.get('dk_wait'): continue
+        written = o.get('start') and o.get('start_src') not in ('programme', 'saison')
+        if (written or o.get('start_asap')) and o.get('months') and o.get('months_src') != 'programme': continue
+        k = reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
+        if k: o['dk'] = k
+        o['rr_v'] = DATES_V
+
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
     new_set = set(new_ids)
     need = [offers[i] for i in new_ids if offers[i].get('dk') and not offers[i].get('initial')]
@@ -927,13 +938,13 @@ def main():
         o['months'] = months_of(o['title']) or months_of(d) or o.get('months') or None
         if o['months'] and o['months'] > 24: o['months'] = None
         old_start = o.get('start') if (o.get('start') or '') >= NOW.strftime('%Y-%m') else None
-        found = start_of(o['title']) or start_of(d, loose=False)
+        found = start_with_title(o['title'], d)
         if found and found != o.get('start'): o['start_src'] = 'texte'  # date écrite : remplace une saison ou une estimation
         o['start'] = found or old_start or None
         dl = o.get('deadline')
         o['deadline'] = (str(dl)[:10] if dl and re.match(r'20\d{2}-\d{2}-\d{2}', str(dl)) else None) or deadline_of(d)
         if o['deadline'] and o['deadline'] == o.get('dl_no'): o['deadline'] = None  # date déjà démentie par l'annonce restée en ligne
-        if o['start'] and o['deadline'] and o['start'] == o['deadline'][:7] and not (start_of(o['title']) or start_of(d, loose=False)):
+        if o['start'] and o['deadline'] and o['start'] == o['deadline'][:7] and not start_with_title(o['title'], d):
             o['start'] = None  # le « début » gardé n'était que le mois de la date limite
         if not o['start'] and (start_asap(o['title']) or start_asap(d)): o['start_asap'] = 1
         else: o.pop('start_asap', None)
@@ -942,6 +953,7 @@ def main():
         if not o.get('location'): o['location'] = location_of(d)
         set_country(o, c)
         if d: o['excerpt'] = d[:500]; o['ctx'] = date_ctx(o['title'] + ' . ' + d, 600)  # passages datés, relus à chaque passage
+        if len(d) >= 300: o['full'] = 1  # fiche complète vraiment lue : seule condition pour afficher « non précisé dans l'offre »
         classify(o, d)
     for o in list(offers.values()):
         if o['id'] in new_set or '_desc' in o:
