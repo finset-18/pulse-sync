@@ -172,6 +172,20 @@ def dates_text(offers):
             if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
             elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
         if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') in ('programme', 'saison'): o['start'] = None
+    # fiches lues au navigateur (job « nav » : eFinancialCareers, Welcome to the Jungle, Indeed, et lien officiel de l'employeur)
+    nav = load('dates_nav.json', {}) or {}
+    for oid, r in nav.items():
+        o = offers.get(oid)
+        if not o or o['status'] != 'open' or not isinstance(r, dict) or not r.get('ok'): continue
+        if r.get('ctx') and len(r['ctx']) > len(o.get('ctx') or ''): o['ctx'] = r['ctx']  # passages datés complets, relus aussi par le modèle local
+        weak = not o.get('start') or o.get('start_src') in ('programme', 'saison', 'ia')
+        if r.get('start') and r['start'] >= NOW.strftime('%Y-%m') and weak and not o.get('start_asap'):
+            o['start'] = r['start']; o['start_src'] = 'texte'
+        elif r.get('asap') and weak:
+            o['start'] = None; o.pop('start_src', None); o['start_asap'] = 1
+        if r.get('months') and (not o.get('months') or o.get('months_src') in ('programme', 'ia')):
+            o['months'] = r['months']; o['months_src'] = 'texte'
+        o['full'] = 1; o.pop('dk', None); o.pop('dk_wait', None)  # fiche complète lue au navigateur : « non précisé » devient fiable
     # dates lues par le modèle local (job « dates ») : seulement là où rien d'écrit n'a été trouvé, ou à la place d'une estimation
     lu = load('dates_ia.json', {}) or {}
     for oid, r in lu.items():
