@@ -30,7 +30,7 @@ NUM_OF = {**NUMW, **{str(i): i for i in range(1, 25)}}
 
 
 def ask(o):
-    user = (f"Aujourd'hui : {NOW.strftime('%Y-%m')}.\nTitre : {o.get('title') or ''}\nExtrait : {(o.get('ctx') or o.get('excerpt') or '')[:700]}")
+    user = (f"Aujourd'hui : {NOW.strftime('%Y-%m')}.\nTitre : {o.get('title') or ''}\nExtrait : {(o.get('ctx') or o.get('excerpt') or '')[:1200]}")
     prompt = f"<|im_start|>system\n{SYSTEM}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
     r = requests.post(URL + '/completion', timeout=60, json={'prompt': prompt, 'n_predict': 48, 'temperature': 0, 'cache_prompt': True, 'json_schema': SCHEMA})
     r.raise_for_status()
