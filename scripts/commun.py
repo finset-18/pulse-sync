@@ -312,7 +312,7 @@ DUR_BEFORE_SKIP = re.compile(r"(?:dans les|within|every|tous les|toutes les|chaq
 WINDOW_CTX = re.compile(r"(?:candidat|application|apply|postul|recrutement|recruitment|deadline|date limite|entretiens?|interviews?|cl[ôo]tur|closing|publi[ée]|posted|valable|jusqu)", re.I)
 END_GAP = re.compile(r"\b(?:fin|end|ending|until|till|jusqu\w*|to|au|aux|à|deadline|limite|avant|before|by|cl[ôo]tur\w*|close[sd]?|closing|expir\w*|valable|candidat\w*|applications?|apply|postul\w*)\b", re.I)
 ASAP_RE = re.compile(r"\b(?:asap|a\.s\.a\.p|as soon as possible|d[èe]s que possible|imm[ée]diatement|immediate(?:ly)?|d[èe]s maintenant|au plus t[ôo]t|d[èe]s à pr[ée]sent)\b", re.I)
-START_KW = re.compile(r"(?:date de d[ée]but|d[ée]but(?: du stage| de stage| de mission)?|start(?:ing)?(?: date)?|starts|commen\w+|à partir d[eu]|a partir d[eu]|à compter d[eu]|disponibilit[ée]|à pourvoir|prise de poste|d[ée]marrage|intake|int[ée]gration|beginning|starting from|d[èe]s (?=(?:" + MONTH_RE + r")\b))", re.I)
+START_KW = re.compile(r"(?:date de d[ée]but|d[ée]but(?: du stage| de stage| de mission)?|start(?:ing)?(?: date)?|starts|commen\w+|à partir d[eu]|a partir d[eu]|à compter d[eu]|disponibilit[ée]|à pourvoir|prise de poste|prises? de fonctions?|entr[ée]e en fonctions?|date d['’]\s*entr[ée]e|arriv[ée]e(?: souhait[ée]e| pr[ée]vue)?|available from|joining date|d[ée]marrage|intake|int[ée]gration|beginning|starting from|d[èe]s (?=(?:" + MONTH_RE + r")\b))", re.I)
 
 
 def _num(s):
@@ -450,8 +450,36 @@ def _start_of(text, loose=True):
 
 
 def start_of(text, loose=True):
-    r = _start_of(text, loose) or semester_start(text)
+    r = _start_of(text, loose) or semester_start(text) or (quarter_start(text) if loose else None)  # trimestre : seulement dans le titre
     return r if r and r >= NOW.strftime('%Y-%m') else None
+
+
+def start_with_title(title, text):
+    """Début écrit dans le titre, sinon dans le texte. Quand le texte écrit un mois avec une année déjà passée
+    (« débutera en mars-avril 2026 ») alors que le titre annonce une seule année à venir (« Stage 2027 »), c'est le mois du texte avec l'année du titre."""
+    r = start_of(title) or start_of(text, loose=False)
+    if r: return r
+    raw = _start_of(text or '', loose=False)
+    ys = set(re.findall(r'\b(20\d{2})\b', title or ''))
+    if raw and len(ys) == 1:
+        y = ys.pop(); fixed = f"{y}-{raw[5:7]}"
+        if raw[:4] < y and fixed >= NOW.strftime('%Y-%m'): return fixed
+    return None
+
+
+# « Q2 2027 », « 2027 … (Q2 - Q4) » : premier mois du trimestre de début, seulement si l'année est écrite à côté ou dans le titre
+QUARTER = re.compile(r"\bq([1-4])\b(?:\s*(?:-|–|to|à)\s*q[1-4]\b)?", re.I)
+
+
+def quarter_start(text):
+    t = text or ''
+    for m in QUARTER.finditer(t):
+        near = re.search(r'\b(20\d{2})\b', t[max(0, m.start() - 20):m.end() + 12])
+        ys = set(re.findall(r'\b(20\d{2})\b', t))
+        y = near.group(1) if near else (ys.pop() if len(ys) == 1 else None)
+        if y and not WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]):
+            return f"{y}-{(int(m.group(1)) - 1) * 3 + 1:02d}"
+    return None
 
 
 # « 1er semestre 2027 », « S2 2027 », « H1 2027 », « second half of 2027 » : début du semestre (année écrite obligatoire)
@@ -483,7 +511,7 @@ def programme_dates(title, contract):
 
 
 # Passages de l'offre qui parlent de dates ou de durée : gardés avec l'offre pour relire les règles à chaque passage sans recharger la fiche
-DATE_HINT = re.compile(START_KW.pattern + r"|dur[ée]e|duration|length of|p[ée]riode|period|\b\d{1,2}\s*[- ]?(?:mois|months?|weeks?|semaines?)\b|semest|\b[hs][12]\s*20\d{2}|"
+DATE_HINT = re.compile(START_KW.pattern + r"|dur[ée]e|duration|length of|p[ée]riode|period|\b\d{1,2}\s*[- ]?(?:mois|months?|weeks?|semaines?)\b|semest|\b[hs][12]\s*20\d{2}|\bq[1-4]\b|"
                        r"\b(?:" + MONTH_RE + r")\b\.?\s*20\d{2}|\d{1,2}[/.]\d{1,2}[/.]20\d{2}|summer|off.?cycle|[ée]t[ée] 20\d{2}|\bsix\b|\btrois\b|\bthree\b", re.I)
 
 
