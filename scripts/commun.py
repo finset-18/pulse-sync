@@ -125,7 +125,12 @@ FAM_DOMAIN = {'bb': 'M&A / Corporate Finance', 'eb': 'M&A / Corporate Finance', 
 MONTHS = {'janvier': 1, 'january': 1, 'jan': 1, 'janv': 1, 'février': 2, 'fevrier': 2, 'february': 2, 'feb': 2, 'févr': 2, 'fevr': 2, 'mars': 3, 'march': 3, 'mar': 3,
           'avril': 4, 'april': 4, 'apr': 4, 'avr': 4, 'mai': 5, 'may': 5, 'juin': 6, 'june': 6, 'jun': 6, 'juillet': 7, 'july': 7, 'jul': 7, 'juil': 7,
           'août': 8, 'aout': 8, 'august': 8, 'aug': 8, 'septembre': 9, 'september': 9, 'sept': 9, 'sep': 9, 'octobre': 10, 'october': 10, 'oct': 10,
-          'novembre': 11, 'november': 11, 'nov': 11, 'décembre': 12, 'decembre': 12, 'december': 12, 'dec': 12, 'déc': 12}
+          'novembre': 11, 'november': 11, 'nov': 11, 'décembre': 12, 'decembre': 12, 'december': 12, 'dec': 12, 'déc': 12,
+          # allemand, néerlandais, italien, espagnol (offres d'Allemagne, des Pays-Bas, de Suisse, d'Italie, d'Espagne)
+          'januar': 1, 'jänner': 1, 'januari': 1, 'gennaio': 1, 'enero': 1, 'februar': 2, 'februari': 2, 'febbraio': 2, 'febrero': 2,
+          'märz': 3, 'maerz': 3, 'maart': 3, 'marzo': 3, 'aprile': 4, 'abril': 4, 'mei': 5, 'maggio': 5, 'mayo': 5,
+          'juni': 6, 'giugno': 6, 'junio': 6, 'juli': 7, 'luglio': 7, 'julio': 7, 'augustus': 8, 'agosto': 8,
+          'settembre': 9, 'septiembre': 9, 'oktober': 10, 'ottobre': 10, 'octubre': 10, 'noviembre': 11, 'dezember': 12, 'dicembre': 12, 'diciembre': 12}
 MONTH_RE = '|'.join(sorted(MONTHS, key=len, reverse=True))
 NUMW = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10, 'twelve': 12,
         'un': 1, 'deux': 2, 'trois': 3, 'quatre': 4, 'cinq': 5, 'sept': 7, 'huit': 8, 'neuf': 9, 'dix': 10, 'douze': 12}
@@ -309,10 +314,10 @@ WEEKS_SKIP = re.compile(r"^\s*(?:of\s+)?(?:paid\s+)?(?:leave|vacation|holiday|an
 DUR_AFTER_SKIP = re.compile(r"^\s*(?:minimum\s+|au moins\s+|at least\s+)?(?:d['’]\s*exp[ée]rience|de pratique|of (?:relevant |professional |work )?experience|experience|exp[ée]rience|apr[èe]s|after|ago|plus tard|later|d['’]anciennet[ée])", re.I)
 DUR_BEFORE_SKIP = re.compile(r"(?:dans les|within|every|tous les|toutes les|chaque|il y a|depuis|since|last|derniers?|past|prochains|next|tou?tes? les|d[ée]lai de|pendant les|during the first)\s*$", re.I)
 # fenêtre de candidature / date limite : jamais lue comme début ou durée
-WINDOW_CTX = re.compile(r"(?:candidat|application|apply|postul|recrutement|recruitment|deadline|date limite|entretiens?|interviews?|cl[ôo]tur|closing|publi[ée]|posted|valable|jusqu)", re.I)
-END_GAP = re.compile(r"\b(?:fin|end|ending|until|till|jusqu\w*|to|au|aux|à|deadline|limite|avant|before|by|cl[ôo]tur\w*|close[sd]?|closing|expir\w*|valable|candidat\w*|applications?|apply|postul\w*)\b", re.I)
-ASAP_RE = re.compile(r"\b(?:asap|a\.s\.a\.p|as soon as possible|d[èe]s que possible|imm[ée]diatement|immediate(?:ly)?|d[èe]s maintenant|au plus t[ôo]t|d[èe]s à pr[ée]sent)\b", re.I)
-START_KW = re.compile(r"(?:date de d[ée]but|d[ée]but(?: du stage| de stage| de mission)?|start(?:ing)?(?: date)?|starts|commen\w+|à partir d[eu]|a partir d[eu]|à compter d[eu]|disponibilit[ée]|à pourvoir|prise de poste|prises? de fonctions?|entr[ée]e en fonctions?|date d['’]\s*entr[ée]e|arriv[ée]e(?: souhait[ée]e| pr[ée]vue)?|available from|joining date|d[ée]marrage|intake|int[ée]gration|beginning|starting from|d[èe]s (?=(?:" + MONTH_RE + r")\b))", re.I)
+WINDOW_CTX = re.compile(r"(?:candidat|application|apply|postul|bewerb|sollicit|solicitud|plazo|recrutement|recruitment|deadline|date limite|entretiens?|interviews?|cl[ôo]tur|closing|publi[ée]|posted|valable|jusqu)", re.I)
+END_GAP = re.compile(r"\b(?:fin|end|ending|until|till|bis|tot|fino|hasta|jusqu\w*|to|au|aux|à|deadline|limite|avant|before|by|cl[ôo]tur\w*|close[sd]?|closing|expir\w*|valable|candidat\w*|applications?|apply|postul\w*)\b", re.I)
+ASAP_RE = re.compile(r"\b(?:asap|a\.s\.a\.p|as soon as possible|d[èe]s que possible|imm[ée]diatement|immediate(?:ly)?|d[èe]s maintenant|au plus t[ôo]t|d[èe]s à pr[ée]sent|ab sofort|per direct|zo snel mogelijk|quanto prima|al pi[uù] presto|lo antes posible|cuanto antes)\b", re.I)
+START_KW = re.compile(r"(?:date de d[ée]but|d[ée]but(?: du stage| de stage| de mission)?|start(?:ing)?(?: date)?|starts|commen\w+|à partir d[eu]|a partir d[eu]|à compter d[eu]|disponibilit[ée]|à pourvoir|prise de poste|prises? de fonctions?|entr[ée]e en fonctions?|date d['’]\s*entr[ée]e|arriv[ée]e(?: souhait[ée]e| pr[ée]vue)?|available from|joining date|beginn|eintrittsdatum|eintritt|startdatum|ingangsdatum|data di inizio|inizio|fecha de inicio|fecha de incorporaci[óo]n|incorporaci[óo]n|a partir del?|d[ée]marrage|intake|int[ée]gration|beginning|starting from|d[èe]s (?=(?:" + MONTH_RE + r")\b)|\bab (?=(?:" + MONTH_RE + r")\b)|\bper (?=(?:" + MONTH_RE + r")\b))", re.I)
 
 
 def _num(s):
@@ -369,10 +374,10 @@ def months_of(text):
     W = r'\b(\d{1,2}|' + '|'.join(NUMW) + r')'
     ok = lambda m: not DUR_AFTER_SKIP.search(t[m.end():m.end() + 30]) and not DUR_BEFORE_SKIP.search(t[max(0, m.start() - 25):m.start()])
     # « 4 à 6 mois », « 4-6 months », « entre 4 et 6 mois », « 4 or 6 months » : la durée la plus longue
-    for m in re.finditer(r'(?:entre\s+|between\s+)?' + W + r'\s*(?:-|–|à|a|to|/|et|and|ou|or)\s*' + W + r'\s*(?:mois|months?)\b', t):
+    for m in re.finditer(r'(?:entre\s+|between\s+)?' + W + r'\s*(?:-|–|à|a|to|/|et|and|ou|or)\s*' + W + r'\s*(?:mois|months?|monaten?|maanden|mesi|meses)\b', t):
         a, b = _num(m.group(1)), _num(m.group(2))
         if a and b and 1 <= a < b <= 24 and ok(m): return b
-    for m in re.finditer(W + r'\s*[- ]?(?:mois|months?|month|mo)\b', t):
+    for m in re.finditer(W + r'\s*[- ]?(?:mois|months?|month|mo|monaten?|monatig\w*|maanden|mesi|meses)\b', t):
         n = _num(m.group(1))
         if n and 1 <= n <= 24 and ok(m): return n
     m = re.search(r"\b(?:un|one|1)\s+semestre\b|\bsemester[- ]long\b|\bone semester\b", t)
@@ -381,7 +386,7 @@ def months_of(text):
         if ok(m) and re.search(r"intern|placement|stage|stagiaire|c[ée]sure|gap year|contrat|contract|dur[ée]e|duration|programme|program", t[max(0, m.start() - 40):m.end() + 40]):
             return 12
     # durée en semaines (summer, spring week…) : 10 semaines ≈ 2 mois
-    for m in re.finditer(r'\b(\d{1,2}|' + '|'.join(NUMW) + r')[\s-](?:weeks?|semaines?)\b', t):
+    for m in re.finditer(r'\b(\d{1,2}|' + '|'.join(NUMW) + r')[\s-](?:weeks?|semaines?|wochen|weken|settimane|semanas)\b', t):
         n = int(m.group(1)) if m.group(1).isdigit() else NUMW[m.group(1)]
         if 3 <= n <= 30 and not WEEKS_SKIP.search(t[m.end():m.end() + 25]) and ok(m): return max(1, round(n / 4.33))
     # période écrite en clair : durée calculée
@@ -539,7 +544,7 @@ def programme_dates(title, contract):
 
 
 # Passages de l'offre qui parlent de dates ou de durée : gardés avec l'offre pour relire les règles à chaque passage sans recharger la fiche
-DATE_HINT = re.compile(START_KW.pattern + r"|dur[ée]e|duration|length of|p[ée]riode|period|\b\d{1,2}\s*[- ]?(?:mois|months?|weeks?|semaines?)\b|semest|\b[hs][12]\s*20\d{2}|\bq[1-4]\b|"
+DATE_HINT = re.compile(START_KW.pattern + r"|dur[ée]e|duration|length of|p[ée]riode|period|\b\d{1,2}\s*[- ]?(?:mois|months?|weeks?|semaines?|monaten?|monatig\w*|maanden|mesi|meses|wochen|weken)\b|semest|\b[hs][12]\s*20\d{2}|\bq[1-4]\b|"
                        r"\b(?:" + MONTH_RE + r")\b\.?\s*20\d{2}|\d{1,2}[/.]\d{1,2}[/.]20\d{2}|summer|off.?cycle|[ée]t[ée] 20\d{2}|\bsix\b|\btrois\b|\bthree\b", re.I)
 
 
