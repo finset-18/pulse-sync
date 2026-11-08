@@ -533,6 +533,7 @@ SEASON_CTX = re.compile(r"intern|stage|stagiaire|placement|program|praktik|analy
 SEASON_SKIP = re.compile(r"graduat|diplôm|dipl[oô]m|class of|promo|semester|semestre|\bterm\b|recruiting season|hiring", re.I)
 
 
+SEASON_YA = re.compile(r"\b(summer|été|sommer|zomer|fall|autumn|automne|herbst|winter|hiver|spring|printemps|frühjahr|voorjaar)\b[^.|()\n]{0,40}?\b(20\d{2})\b", re.I)
 SEASON_YB = re.compile(r"\b(20\d{2})\b[^.|()\n]{0,40}?\b(summer|été|sommer|zomer|fall|autumn|automne|herbst|winter|hiver|spring|printemps|frühjahr|voorjaar)\b", re.I)
 
 
@@ -544,6 +545,8 @@ def season_of(text, title=''):
         if r[0]: return r
         m = SEASON_YB.search(title)
         if m and not SEASON_SKIP.search(title[:m.start()]): return f"{m.group(1)}-{SEASON_W[m.group(2).lower()]}", m.group(0)
+        m = SEASON_YA.search(title)  # « Summer Internship Program 2027 »
+        if m and not SEASON_SKIP.search(title[:m.start()]): return f"{m.group(2)}-{SEASON_W[m.group(1).lower()]}", m.group(0)
     t = text or ''
     for m in SEASON_RE.finditer(t):
         around = t[max(0, m.start() - 70):m.end() + 45]
