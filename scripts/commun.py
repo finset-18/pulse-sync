@@ -341,23 +341,26 @@ MONY = r"(" + MONTH_RE + r")\.?\s*(20\d{2})?"
 RANGE_SEP = r"\s*(?:-|–|—|à|au|a|to|till|until|through|thru|bis|tot en met|tot|t/m|hasta|al|jusqu['’]?(?:au|à|en)?|/)\s*(?:(?:early|mid|late|début|mi|fin)[\s-]+)?"
 
 
+GRAD_CTX = re.compile(r"graduat|dipl[oô]m[ée]?s?\b|obtention du|class of|promo(?:tion)?\s+20", re.I)  # dates de diplôme ou d'études, pas le stage
+
+
 def period_of(text):
     """Période de stage écrite en clair (« du 05/01/2027 au 30/06/2027 », « janvier à juin 2027 », « Sept 2027 – Feb 2028 »).
     Renvoie (début 'AAAA-MM', durée en mois) ou (None, None). Ignore les fenêtres de candidature."""
     t = (text or '').lower()
     for m in re.finditer(r"(?:du\s+|from\s+|de\s+)?" + DMY + RANGE_SEP + DMY, t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         d1, m1, y1, d2, m2, y2 = (int(x) for x in m.groups())
         if 1 <= m1 <= 12 and 1 <= m2 <= 12:
             n = _months_between(y1, m1, y2, m2, d1, d2)
             if n: return f"{y1}-{m1:02d}", n
     for m in re.finditer(r"(?:du\s+|from\s+|de\s+)?" + DMONY + RANGE_SEP + DMONY, t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         d1, mo1, y1, d2, mo2, y2 = m.groups()
         n = _months_between(int(y1), MONTHS[mo1], int(y2), MONTHS[mo2], int(d1), int(d2))
         if n: return f"{y1}-{MONTHS[mo1]:02d}", n
     for m in re.finditer(r"\b(?:de\s+|d['’]\s*|from\s+|du mois de\s+|von\s+|van\s+|de\s+|(?:early|mid|late|début|mi)[\s-]+)?" + MONY + RANGE_SEP + r"(?:fin\s+|end of\s+)?" + r"(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         mo1, y1, mo2, y2 = m.groups()
         a, b, y2 = MONTHS[mo1], MONTHS[mo2], int(y2)
         y1 = int(y1) if y1 else (y2 if a <= b else y2 - 1)
@@ -390,7 +393,7 @@ def months_of(text):
     # durée en semaines (summer, spring week…) : 10 semaines ≈ 2 mois
     for m in re.finditer(r'\b(\d{1,2}|' + '|'.join(NUMW) + r')[\s-](?:weeks?|semaines?|wochen|weken|settimane|semanas)\b', t):
         n = int(m.group(1)) if m.group(1).isdigit() else NUMW[m.group(1)]
-        if re.search(r'process|processus|recrut|recruit|\btakes?\b|\bprend\b|r[ée]ponse|response|d[ée]lai|notice|pr[ée]avis', t[max(0, m.start() - 45):m.start()]): continue  # délai de recrutement, pas la durée
+        if re.search(r'process|processus|recrut|recruit|hiring|r[ée]ponse|response|d[ée]lai|notice|pr[ée]avis|feedback', t[max(0, m.start() - 45):m.start()]): continue  # délai de recrutement, pas la durée
         if 3 <= n <= 30 and not WEEKS_SKIP.search(t[m.end():m.end() + 25]) and ok(m): return max(1, round(n / 4.33))
     # période écrite en clair : durée calculée
     _, n = period_of(t)
@@ -530,8 +533,17 @@ SEASON_CTX = re.compile(r"intern|stage|stagiaire|placement|program|praktik|analy
 SEASON_SKIP = re.compile(r"graduat|diplôm|dipl[oô]m|class of|promo|semester|semestre|\bterm\b|recruiting season|hiring", re.I)
 
 
-def season_of(text):
-    """Saison écrite avec son année, dans le contexte du stage. Renvoie (mois de début habituel 'AAAA-MM', libellé tel qu'écrit)."""
+SEASON_YB = re.compile(r"\b(20\d{2})\b[^.|()\n]{0,40}?\b(summer|été|sommer|zomer|fall|autumn|automne|herbst|winter|hiver|spring|printemps|frühjahr|voorjaar)\b", re.I)
+
+
+def season_of(text, title=''):
+    """Saison écrite avec son année, dans le contexte du stage. Le titre passe d'abord (« 2028 Private Equity Summer Analyst »).
+    Renvoie (mois de début habituel 'AAAA-MM', libellé tel qu'écrit)."""
+    if title:
+        r = season_of(title)
+        if r[0]: return r
+        m = SEASON_YB.search(title)
+        if m and not SEASON_SKIP.search(title[:m.start()]): return f"{m.group(1)}-{SEASON_W[m.group(2).lower()]}", m.group(0)
     t = text or ''
     for m in SEASON_RE.finditer(t):
         around = t[max(0, m.start() - 70):m.end() + 45]

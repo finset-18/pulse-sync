@@ -23,7 +23,8 @@ for o in offers:
     s = sw(title, txt) if sw else (c.start_of(title) or c.start_of(txt, loose=False))
     m = mw(title, txt) if mw else (c.months_of(title) or c.months_of(txt))
     a = bool(c.start_asap(title) or c.start_asap(txt))
-    ss = season(title + ' . ' + txt)[0] if season else None
+    try: ss = season(txt, title=title)[0] if season else None
+    except TypeError: ss = season(title + ' . ' + txt)[0]
     res[o['id']] = [s, a, ss, m]
 json.dump(res, open(out, 'w'))
 print(f'eval : {len(res)} offres ouvertes évaluées avec {src}')

@@ -172,7 +172,7 @@ def dates_text(offers):
             if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
             elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
             elif not o.get('start'):  # saison écrite (« Summer 2027 ») : mois de début habituel, marqué « saison »
-                ss, _lab = season_of(o['title'] + ' . ' + src)
+                ss, _lab = season_of(src, title=o['title'])
                 if ss and ss >= NOW.strftime('%Y-%m'): o['start'] = ss; o['start_src'] = 'saison'
         if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') in ('programme', 'saison'): o['start'] = None
     # fiches lues au navigateur (job « nav » : eFinancialCareers, Welcome to the Jungle, Indeed, et lien officiel de l'employeur)
