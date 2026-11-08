@@ -29,7 +29,7 @@ FAST_BUDGET_S = float(os.environ.get('FAST_BUDGET_S', '230'))  # lecture des str
 SCAN_MAX_S = float(os.environ.get('SCAN_MAX_S', '0')) or min(60.0, FAST_BUDGET_S / 3)  # délai maximal d'une structure : au-delà son fil est rendu aux autres
 CUT_MAX = int(os.environ.get('CUT_MAX', '3'))  # coupures de suite avant de passer au job lent
 BEHIND_MAX = float(os.environ.get('BEHIND_MAX', '0.25'))  # part de structures non lues au-delà de laquelle le passage est dégradé
-DETAILS_BUDGET_S = float(os.environ.get('DETAILS_BUDGET_S', '35'))  # fiches détaillées, budget à part
+DETAILS_BUDGET_S = max(float(os.environ.get('DETAILS_BUDGET_S', '35')), 90)  # fiches détaillées, budget à part (90 s au moins : relecture des offres sans date écrite)
 LINKS_BUDGET_S = float(os.environ.get('LINKS_BUDGET_S', '20'))  # liens des agrégateurs, budget à part
 YEAR_CLOSE = os.environ.get('YEAR_CLOSE', '1') == '1'  # 0 : plus de fermeture « année passée », les fermetures récentes sont annulées
 YEAR_REVERT_DAYS = int(os.environ.get('YEAR_REVERT_DAYS', '7'))  # une fermeture « année passée » que la règle ne confirme plus est annulée pendant ce délai
