@@ -1,0 +1,55 @@
+name: regles
+
+# Test de non-régression des règles de dates (manuel) : compare les règles d'une branche à celles de main sur toutes les
+# offres ouvertes. Ne modifie aucune offre : le détail est écrit dans audit/regles.json du dépôt de données (privé),
+# le journal public ne montre que des comptes.
+on:
+  workflow_dispatch:
+    inputs:
+      branche:
+        description: "Branche dont on teste les règles"
+        default: "regles-dates"
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: avant
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branche }}
+          path: apres
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests==2.32.3
+      - name: comparaison
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+        run: |
+          python apres/scripts/dates_eval.py avant/scripts avant.json
+          python apres/scripts/dates_eval.py apres/scripts apres.json
+          mkdir -p store/audit
+          cd apres/scripts && python dates_compare.py ../../avant.json ../../apres.json ../../store/audit/regles.json
+      - name: save
+        working-directory: store
+        run: |
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add audit/regles.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "audit regles $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase --autostash -X theirs && git push -q && exit 0; sleep $((i * 7)); done
+          exit 1
