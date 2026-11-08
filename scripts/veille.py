@@ -21,7 +21,7 @@ from commun import *  # noqa
 from taxonomie import metier_of, front_of, famx_of, langs_of, contact_of, norm as tnorm
 
 SCHEMA = 2
-DATES_V = 2  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
+DATES_V = 3  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
 MAX_DETAILS = int(os.environ.get('MAX_DETAILS', '800'))
@@ -165,7 +165,7 @@ def dates_text(offers):
         if o['status'] != 'open': continue
         src = o.get('ctx') or o.get('excerpt') or ''
         if not o.get('months') or o.get('months_src') == 'programme':
-            m = months_of(o['title']) or months_of(src)
+            m = months_with_title(o['title'], src)
             if m and m <= 24: o['months'] = m; o['months_src'] = 'texte'
         if not o.get('start') or o.get('start_src') in ('programme', 'saison'):
             s = start_with_title(o['title'], src)
@@ -935,7 +935,7 @@ def main():
         if o.get('contract_src') != 'ia' and not (o.get('contract') and ct == 'Stage' and not com): o['contract'] = ct  # relecture : garder le contrat déjà trouvé
         o['domain'] = domain_of(o['title'], d, c.get('fam'))
         # durée et début : seulement s'ils sont écrits (titre, texte, champs de la plateforme) ; sinon null, jamais devinés
-        o['months'] = months_of(o['title']) or months_of(d) or o.get('months') or None
+        o['months'] = months_with_title(o['title'], d) or o.get('months') or None
         if o['months'] and o['months'] > 24: o['months'] = None
         old_start = o.get('start') if (o.get('start') or '') >= NOW.strftime('%Y-%m') else None
         found = start_with_title(o['title'], d)
@@ -952,7 +952,7 @@ def main():
         # lieu : celui du poste (plateforme, fiche, « Lieu : … » dans le texte) ; la ville du siège n'est jamais recopiée
         if not o.get('location'): o['location'] = location_of(d)
         set_country(o, c)
-        if d: o['excerpt'] = d[:500]; o['ctx'] = date_ctx(o['title'] + ' . ' + d, 600)  # passages datés, relus à chaque passage
+        if d: o['excerpt'] = d[:500]; o['ctx'] = date_ctx(o['title'] + ' . ' + d, 1200)  # passages datés, relus à chaque passage (et lus par le modèle local)
         if len(d) >= 300: o['full'] = 1  # fiche complète vraiment lue : seule condition pour afficher « non précisé dans l'offre »
         classify(o, d)
     for o in list(offers.values()):
