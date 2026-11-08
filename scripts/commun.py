@@ -1443,6 +1443,10 @@ def fetch_api(c, rec, max_pages=None):
 
 
 # ---------------------------------------------------------------- fiches détaillées
+LI_DESC = re.compile(r'(?is)class="show-more-less-html__markup[^"]*"[^>]*>(.*?)</div>')
+LI_CRIT = re.compile(r'(?is)<li class="description__job-criteria-item">(.*?)</li>')
+
+
 def detail_text(kind, url):
     if kind == 'oracle':
         host, site, rid = url.split('|')
@@ -1480,6 +1484,13 @@ def detail_text(kind, url):
                     return txt, None, (j.get('jobLocation') or {}).get('displayName') or '', None  # fin d'annonce eFC : pas une date limite
         raise RuntimeError('offre eFinancialCareers introuvable dans l\'API')
     r = get(url); h = r.text
+    if 'linkedin.com' in host_of(r.url or url):  # LinkedIn : seulement le bloc de description, jamais les « offres similaires » de la page
+        m = LI_DESC.search(h)
+        if not m: raise RuntimeError('fiche LinkedIn sans description (expirée ou page de connexion)')
+        body = clean(m.group(1))
+        crit = ' . '.join(clean(x) for x in LI_CRIT.findall(h))
+        if bad_page(body): raise RuntimeError('page de blocage ou de maintenance au lieu de la fiche')
+        return body + (' . ' + crit if crit else ''), None, '', None
     lds = jsonld_jobs(h, url)
     hidden = data_dates(h)  # date de début rangée dans les données de la page (WTTJ, schema.org jobStartDate…) et pas dans le texte
     if lds:

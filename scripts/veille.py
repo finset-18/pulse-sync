@@ -21,6 +21,7 @@ from commun import *  # noqa
 from taxonomie import metier_of, front_of, famx_of, langs_of, contact_of, norm as tnorm
 
 SCHEMA = 2
+LI_V = 1  # relecture unique des offres LinkedIn avec le seul bloc de description (les anciennes relectures prenaient toute la page)
 FIX_V = 1  # version de la passe de correction des dates déjà enregistrées (jamais d'effacement : seulement une date écrite qui en remplace une autre)
 DATES_V = 4  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
@@ -213,6 +214,22 @@ def dates_text(offers):
             o['start'] = None; o.pop('start_src', None); o['start_asap'] = 1
         if r.get('months') and (not o.get('months') or o.get('months_src') == 'programme'):
             o['months'] = r['months']; o['months_src'] = 'ia'
+
+
+def dates_stats(out):
+    """Bilan des dates sur les offres ouvertes (sans doublons) : complètes (début et durée), traitées (complètes, ou fiche lue en entier
+    où l'employeur n'écrit pas l'information : « non précisé »), et la part des valeurs estimées (programme), jamais comptée comme écrite."""
+    op = [o for o in out if o['status'] == 'open' and not o.get('dup_of')]
+    n = len(op) or 1
+    has_s = lambda o: bool(o.get('start') or o.get('start_asap'))
+    comp = [o for o in op if has_s(o) and o.get('months')]
+    written = [o for o in comp if o.get('start_src') != 'programme' and o.get('months_src') != 'programme']
+    lu = lambda o: bool(o.get('full') and not o.get('dk') and not o.get('dk_wait'))
+    trait = [o for o in op if (has_s(o) and o.get('months')) or lu(o)]
+    pct = lambda k: round(100 * k / n, 1)
+    return {'open': len(op), 'complete': len(comp), 'complete_pct': pct(len(comp)), 'complete_written': len(written), 'complete_written_pct': pct(len(written)),
+            'traitees': len(trait), 'traitees_pct': pct(len(trait)), 'start_pct': pct(sum(1 for o in op if has_s(o))), 'months_pct': pct(sum(1 for o in op if o.get('months'))),
+            'non_precise': sum(1 for o in op if lu(o) and not (has_s(o) and o.get('months')))}
 
 
 def dates_finish(offers):
@@ -520,7 +537,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v', 'li_v', 'li_reset')
 
 
 def write_lite(out, updated):
@@ -883,6 +900,9 @@ def main():
             if server_blocked(o, k): o.pop('dk_wait', None)
             elif not (o.get('months') and o.get('start')): o['dk'] = k; o.pop('dk_wait', None)
             o['dkw_fix'] = 1
+        # LinkedIn : relecture unique avec le seul bloc de description ; durée et début écrits repris de zéro (les anciens venaient parfois d'offres voisines)
+        if o.get('via') == 'linkedin' and o.get('li_v') != LI_V and str(o.get('url')).startswith('http'):
+            o['dk'] = ['page', o['url']]; o['li_reset'] = 1; o['li_v'] = LI_V; o.pop('dk_wait', None); o.pop('dk_fail', None); o.pop('dk_round', None)
         # lecture en attente après un blocage : on retente quand le délai est passé
         if o.get('dk_wait') and not o.get('dk') and o['dk_wait'][1] <= NOW_ISO:
             if not (o.get('months') and o.get('start')): o['dk'] = o['dk_wait'][0]
@@ -967,6 +987,9 @@ def main():
 
     def enrich(o):
         c = byid.get(o['company_id'], {}); d = o.pop('_desc', '') or ''; com = o.pop('_commit', '') or ''
+        if o.pop('li_reset', None) and d:  # relecture LinkedIn réussie : on repart du texte de la description seule
+            o['months'] = None; o.pop('months_src', None); o.pop('start_asap', None)
+            if o.get('start_src') in (None, 'texte', 'ia'): o['start'] = None; o.pop('start_src', None)
         if d: texts[o['id']] = d
         ct = contract_of(o['title'] + ' ' + com)
         if o.get('contract_src') != 'ia' and not (o.get('contract') and ct == 'Stage' and not com): o['contract'] = ct  # relecture : garder le contrat déjà trouvé
@@ -1070,6 +1093,8 @@ def main():
             'new_this_run': sum(1 for i in new_ids if i in offers and not offers[i].get('initial')),
             'initial_this_run': sum(1 for i in new_ids if i in offers and offers[i].get('initial')), 'closed_this_run': closed_now,
             'failed': failed, 'hors_liste_open': sum(1 for o in out if o['status'] == 'open' and is_hl(o['company_id']) and not o.get('dup_of')), 'extra': EXTRA, 'tracked': tracked}
+    try: meta['dates'] = dates_stats(out)
+    except Exception as e: err('bilan des dates', e)
     scanned = meta['companies_scanned'] or 1
     meta.update({'errors': len(ERRS), 'error_list': ERRS[:40], 'failed_sources': sorted(x['id'] for x in failed_now)[:400],
                  'failed_sources_count': len(failed_now), 'failed_sources_sample': failed_now[:25],
