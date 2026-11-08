@@ -338,7 +338,10 @@ def _months_between(y1, m1, y2, m2, d1=None, d2=None):
 DMY = r"(\d{1,2})[/.-](\d{1,2})[/.-](20\d{2})"
 DMONY = r"(\d{1,2})(?:er|st|nd|rd|th)?\s+(" + MONTH_RE + r")\.?\s+(20\d{2})"
 MONY = r"(" + MONTH_RE + r")\.?\s*(20\d{2})?"
-RANGE_SEP = r"\s*(?:-|–|—|à|au|a|to|till|until|jusqu['’]?(?:au|à|en)?|/)\s*"
+RANGE_SEP = r"\s*(?:-|–|—|à|au|a|to|till|until|through|thru|bis|tot en met|tot|t/m|hasta|al|jusqu['’]?(?:au|à|en)?|/)\s*(?:(?:early|mid|late|début|mi|fin)[\s-]+)?"
+
+
+GRAD_CTX = re.compile(r"graduat|dipl[oô]m[ée]?s?\b|obtention du|class of|promo(?:tion)?\s+20|full[- ]?time (?:employment|role|position|offer|hire)|return offer|cdi\b|embauche|e? ?nroll?ed|inscrit", re.I)  # dates de diplôme, d'études ou d'embauche après le stage, pas le stage
 
 
 def period_of(text):
@@ -346,22 +349,30 @@ def period_of(text):
     Renvoie (début 'AAAA-MM', durée en mois) ou (None, None). Ignore les fenêtres de candidature."""
     t = (text or '').lower()
     for m in re.finditer(r"(?:du\s+|from\s+|de\s+)?" + DMY + RANGE_SEP + DMY, t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         d1, m1, y1, d2, m2, y2 = (int(x) for x in m.groups())
         if 1 <= m1 <= 12 and 1 <= m2 <= 12:
             n = _months_between(y1, m1, y2, m2, d1, d2)
             if n: return f"{y1}-{m1:02d}", n
     for m in re.finditer(r"(?:du\s+|from\s+|de\s+)?" + DMONY + RANGE_SEP + DMONY, t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         d1, mo1, y1, d2, mo2, y2 = m.groups()
         n = _months_between(int(y1), MONTHS[mo1], int(y2), MONTHS[mo2], int(d1), int(d2))
         if n: return f"{y1}-{MONTHS[mo1]:02d}", n
-    for m in re.finditer(r"\b(?:de\s+|d['’]\s*|from\s+|du mois de\s+)?" + MONY + RANGE_SEP + r"(?:fin\s+|end of\s+)?" + r"(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]): continue
+    for m in re.finditer(r"\b(?:de\s+|d['’]\s*|from\s+|du mois de\s+|von\s+|van\s+|de\s+|(?:early|mid|late|début|mi)[\s-]+)?" + MONY + RANGE_SEP + r"(?:fin\s+|end of\s+)?" + r"(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         mo1, y1, mo2, y2 = m.groups()
         a, b, y2 = MONTHS[mo1], MONTHS[mo2], int(y2)
         y1 = int(y1) if y1 else (y2 if a <= b else y2 - 1)
         n = _months_between(y1, a, y2, b)
+        if n: return f"{y1}-{a:02d}", n
+    # format américain : « June 7, 2027 – August 13, 2027 », « January 4 to April 30, 2027 », « Monday, June 7th through Friday, August 13th 2027 »
+    for m in re.finditer(r"\b(" + MONTH_RE + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(20\d{2}))?" + RANGE_SEP + r"(?:[a-z]+day,?\s+)?(" + MONTH_RE + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(20\d{2})\b", t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
+        mo1, d1, y1, mo2, d2, y2 = m.groups()
+        a, b, y2 = MONTHS[mo1], MONTHS[mo2], int(y2)
+        y1 = int(y1) if y1 else (y2 if a <= b else y2 - 1)
+        n = _months_between(y1, a, y2, b, int(d1), int(d2))
         if n: return f"{y1}-{a:02d}", n
     return None, None
 
@@ -385,9 +396,12 @@ def months_of(text):
     for m in re.finditer(r"\b(?:un|one|1|a)[\s-](?:an|year)\b(?:\s+(?:internship|placement|stage|de stage|contract|programme|program))?", t):
         if ok(m) and re.search(r"intern|placement|stage|stagiaire|c[ée]sure|gap year|contrat|contract|dur[ée]e|duration|programme|program", t[max(0, m.start() - 40):m.end() + 40]):
             return 12
+    m = re.search(r"\b(?:dur[ée]e|duration|dauer|duur|durata|duraci[óo]n)\s*\((?:en|in|in den)?\s*(?:mois|months?|monaten|maanden|mesi|meses)\)\s*:?\s*(\d{1,2})\b", t)
+    if m and 1 <= int(m.group(1)) <= 24: return int(m.group(1))
     # durée en semaines (summer, spring week…) : 10 semaines ≈ 2 mois
     for m in re.finditer(r'\b(\d{1,2}|' + '|'.join(NUMW) + r')[\s-](?:weeks?|semaines?|wochen|weken|settimane|semanas)\b', t):
         n = int(m.group(1)) if m.group(1).isdigit() else NUMW[m.group(1)]
+        if re.search(r'process|processus|recrut|recruit|hiring|r[ée]ponse|response|d[ée]lai|notice|pr[ée]avis|feedback', t[max(0, m.start() - 45):m.start()]): continue  # délai de recrutement, pas la durée
         if 3 <= n <= 30 and not WEEKS_SKIP.search(t[m.end():m.end() + 25]) and ok(m): return max(1, round(n / 4.33))
     # période écrite en clair : durée calculée
     _, n = period_of(t)
@@ -448,7 +462,7 @@ def _start_of(text, loose=True):
         if 1 <= mo <= 12: return f"{y}-{mo:02d}"
     # 2b. date suivie du mot de début (« for a September 2027 start », « janvier 2027 intake »)
     for m in re.finditer(r'\b(' + MONTH_RE + r')\.?\s*(20\d{2})\s*(?:start(?:ing)?|start date|intake|entry|cohort)\b', t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
     # 2c. date juste après le nom du stage (« Stage de 6 mois – janvier 2027 », « Internship (June 2027) »), sans mot de fin ou de candidature entre les deux
     for m in re.finditer(r"\b(?:stage|stagiaire|internship|intern|placement|off[- ]?cycle|alternance|apprentissage|apprenticeship|v\.?i\.?e)\b([^.\n;]{0,40}?)\b(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
@@ -520,6 +534,36 @@ SEM1 = re.compile(r"\b(?:s1|h1|1(?:er|st)\s+semest(?:re|er)|premier\s+semestre|f
 SEM2 = re.compile(r"\b(?:s2|h2|2(?:nd|e|ème|eme)\s+semest(?:re|er)|second\s+(?:semestre|semester|half)|fall\s+semester|autumn\s+semester)\s*(?:de\s+|of\s+|du\s+)?(20\d{2})\b", re.I)
 
 
+SEASON_W = {'summer': '06', 'été': '06', 'ete': '06', 'sommer': '06', 'zomer': '06', 'fall': '09', 'autumn': '09', 'automne': '09', 'herbst': '09', 'najaar': '09',
+            'winter': '01', 'hiver': '01', 'spring': '01', 'printemps': '01', 'frühjahr': '01', 'voorjaar': '01'}
+SEASON_RE = re.compile(r"\b(summer|été|ete|sommer|zomer|fall|autumn|automne|herbst|najaar|winter|hiver|spring|printemps|frühjahr|voorjaar)\s+(20\d{2})\b", re.I)
+SEASON_CTX = re.compile(r"intern|stage|stagiaire|placement|program|praktik|analyst|associate|off[- ]?cycle|cohort|class of interns|research", re.I)
+SEASON_SKIP = re.compile(r"graduat|diplôm|dipl[oô]m|class of|promo|semester|semestre|\bterm\b|recruiting season|hiring", re.I)
+
+
+SEASON_YA = re.compile(r"\b(summer|été|sommer|zomer|fall|autumn|automne|herbst|winter|hiver|spring|printemps|frühjahr|voorjaar)\b[^.|()\n]{0,40}?\b(20\d{2})\b", re.I)
+SEASON_YB = re.compile(r"\b(20\d{2})\b[^.|()\n]{0,40}?\b(summer|été|sommer|zomer|fall|autumn|automne|herbst|winter|hiver|spring|printemps|frühjahr|voorjaar)\b", re.I)
+
+
+def season_of(text, title=''):
+    """Saison écrite avec son année, dans le contexte du stage. Le titre passe d'abord (« 2028 Private Equity Summer Analyst »).
+    Renvoie (mois de début habituel 'AAAA-MM', libellé tel qu'écrit)."""
+    if title:
+        r = season_of(title)
+        if r[0]: return r
+        m = SEASON_YB.search(title)
+        if m and not SEASON_SKIP.search(title[:m.start()]): return f"{m.group(1)}-{SEASON_W[m.group(2).lower()]}", m.group(0)
+        m = SEASON_YA.search(title)  # « Summer Internship Program 2027 »
+        if m and not SEASON_SKIP.search(title[:m.start()]): return f"{m.group(2)}-{SEASON_W[m.group(1).lower()]}", m.group(0)
+    t = text or ''
+    for m in SEASON_RE.finditer(t):
+        around = t[max(0, m.start() - 70):m.end() + 45]
+        if SEASON_SKIP.search(t[max(0, m.start() - 35):m.start()]) or not SEASON_CTX.search(around): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 35):m.start()]): continue
+        return f"{m.group(2)}-{SEASON_W[m.group(1).lower()]}", m.group(0)
+    return None, None
+
+
 def semester_start(text):
     t = text or ''
     m1, m2 = SEM1.search(t), SEM2.search(t)
@@ -566,7 +610,8 @@ def start_asap(text):
     t = (text or '').lower()
     for k in START_KW.finditer(t):
         if ASAP_RE.search(t[k.end():k.end() + 30]): return True
-    return bool(re.search(r"(?:stage|internship|intern|stagiaire|poste)\b[^.\n]{0,40}\b(?:asap|d[èe]s que possible)\b", t))
+    if re.search(r"(?:stage|internship|intern|stagiaire|poste)\b[^.\n]{0,40}\b(?:asap|d[èe]s que possible)\b", t): return True
+    return bool(re.search(r"\b(?:per direct|zo snel mogelijk|ab sofort|zum n[äa]chstm[öo]glichen zeitpunkt)\b[^.\n]{0,30}\b(?:stage|stagiair\w*|praktikum|praktikant\w*|werkstudent\w*|internship)", t))
 
 
 DL_STOP = re.compile(r"rolling|au fil de l.eau|non pr[ée]cis|not (?:specified|stated|applicable)|\bn/?a\b|\bnone\b|\baucune?\b|\bsans\b|d[ée]but|start|commenc|\bsending\b|\bstage du\b|\bdu \d", re.I)
@@ -1504,7 +1549,7 @@ def j_sitemap(c, m):
             desc = l.get('desc') or body
             cache[u] = {'title': title[:200], 'commit': l.get('commit') or '', 'location': l.get('location') or '', 'posted': l.get('posted'),
                         'deadline': l.get('deadline'), 'start': start_of(body, loose=False), 'months': months_of(desc) or months_of(body),
-                        'desc': (desc[:2500] + ' ' + _start_line(body)).strip()}
+                        'desc': (_start_line(body) + ' . ' + desc[:2500]).strip(' .')}  # ligne « Date de début » en tête : gardée dans l'extrait de l'offre
         except Exception:
             continue
     save(name, cache)

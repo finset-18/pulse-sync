@@ -21,6 +21,7 @@ from commun import *  # noqa
 from taxonomie import metier_of, front_of, famx_of, langs_of, contact_of, norm as tnorm
 
 SCHEMA = 2
+FIX_V = 1  # version de la passe de correction des dates déjà enregistrées (jamais d'effacement : seulement une date écrite qui en remplace une autre)
 DATES_V = 4  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
@@ -159,6 +160,16 @@ def reread_url(o):
     return None
 
 
+# Sites qui refusent la lecture depuis les serveurs GitHub (diagnostic du 08/11 : 12 à 15 fiches sur 15 bloquées) : le robot ne les relit
+# plus en boucle. eFC, WTTJ et Indeed sont lus par le job « nav » (vrai navigateur) ; BPCE et Workable restent sans lecture pour l'instant.
+SERVER_BLOCKED = re.compile(r"welcometothejungle\.com|indeed\.com|recrutement\.bpce\.fr|apply\.workable\.com", re.I)
+
+
+def server_blocked(o, key=None):
+    u = (key[1] if key and key[0] == 'page' else '') or ('' if key else o.get('url') or '')
+    return bool(SERVER_BLOCKED.search(str(u)))
+
+
 def dates_text(offers):
     """À chaque passage, pour chaque offre ouverte : début et durée relus dans le titre et les passages datés gardés (sans recharger la fiche)."""
     for o in offers.values():
@@ -167,11 +178,16 @@ def dates_text(offers):
         if not o.get('months') or o.get('months_src') == 'programme':
             m = months_with_title(o['title'], src)
             if m and m <= 24: o['months'] = m; o['months_src'] = 'texte'
-        if not o.get('start') or o.get('start_src') in ('programme', 'saison'):
+        fix = o.get('fix_v') != FIX_V  # passe de correction (une fois par version) : une date écrite relue avec les règles actuelles remplace une valeur des anciennes règles
+        if not o.get('start') or o.get('start_src') in ('programme', 'saison') or (fix and o.get('start_src') == 'texte' and not o.get('start_asap')):
             s = start_with_title(o['title'], src)
             if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
             elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
+            elif not o.get('start') or (fix and o.get('start_src') == 'texte' and not o.get('start_asap')):  # saison écrite (« Summer 2027 ») : mois de début habituel, marqué « saison »
+                ss, _lab = season_of(src, title=o['title'])
+                if ss and ss >= NOW.strftime('%Y-%m'): o['start'] = ss; o['start_src'] = 'saison'
         if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') in ('programme', 'saison'): o['start'] = None
+        o['fix_v'] = FIX_V
     # fiches lues au navigateur (job « nav » : eFinancialCareers, Welcome to the Jungle, Indeed, et lien officiel de l'employeur)
     nav = load('dates_nav.json', {}) or {}
     for oid, r in nav.items():
@@ -504,7 +520,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v')
 
 
 def write_lite(out, updated):
@@ -860,6 +876,13 @@ def main():
             o.pop('excerpt', None); o['bad_fix'] = 1
             if not (o.get('months') and o.get('start')) and o.get('url', '').startswith('http') and not o.get('dk'):
                 o['dk'] = reread_url(o) or ['page', o['url']]
+        # relectures bloquées avant le diagnostic du 08/11 : site lisible -> relue tout de suite (par l'API quand il y en a une, eFC compris),
+        # site qui bloque le serveur -> plus de relecture en boucle
+        if o.get('dk_wait') and not o.get('dk') and not o.get('dkw_fix'):
+            k = reread_url(o) or o['dk_wait'][0]
+            if server_blocked(o, k): o.pop('dk_wait', None)
+            elif not (o.get('months') and o.get('start')): o['dk'] = k; o.pop('dk_wait', None)
+            o['dkw_fix'] = 1
         # lecture en attente après un blocage : on retente quand le délai est passé
         if o.get('dk_wait') and not o.get('dk') and o['dk_wait'][1] <= NOW_ISO:
             if not (o.get('months') and o.get('start')): o['dk'] = o['dk_wait'][0]
@@ -898,7 +921,7 @@ def main():
         if o['status'] != 'open' or o.get('page_rr') or o.get('dk') or o.get('dk_wait'): continue
         if (o.get('start') and o.get('start_src') not in ('programme', 'saison')) or o.get('start_asap'): continue
         k = reread_url(o) or (['page', o['url']] if str(o.get('url')).startswith('http') else None)
-        if k: o['dk'] = k
+        if k and not server_blocked(o, k): o['dk'] = k
         o['page_rr'] = 1
 
     # cinquième rattrapage (règles de dates v2) : toute offre ouverte sans début écrit ou sans durée, dont la fiche complète n'a pas été lue,
@@ -908,7 +931,7 @@ def main():
         written = o.get('start') and o.get('start_src') not in ('programme', 'saison')
         if (written or o.get('start_asap')) and o.get('months') and o.get('months_src') != 'programme': continue
         k = reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
-        if k: o['dk'] = k
+        if k and not server_blocked(o, k): o['dk'] = k
         o['rr_v'] = DATES_V
 
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
@@ -931,8 +954,8 @@ def main():
             o.pop('dk', None)
         except Exception:
             o['dk_fail'] = o.get('dk_fail', 0) + 1
-            if o['dk_fail'] >= 3:  # site qui bloque pour l'instant : nouvel essai dans 12 h, 4 fois au plus
-                if o.get('dk_round', 0) < 4: o['dk_wait'] = [o['dk'], (NOW + dt.timedelta(hours=12)).strftime('%Y-%m-%dT%H:%M:%SZ')]
+            if o['dk_fail'] >= 3:  # site qui bloque pour l'instant : nouvel essai dans 12 h, 4 fois au plus (jamais pour un site qui bloque le serveur)
+                if o.get('dk_round', 0) < 4 and not server_blocked(o, o['dk']): o['dk_wait'] = [o['dk'], (NOW + dt.timedelta(hours=12)).strftime('%Y-%m-%dT%H:%M:%SZ')]
                 o['dk_round'] = o.get('dk_round', 0) + 1; o.pop('dk', None); o.pop('dk_fail', None)
                 if o['dk_round'] > 4: o.setdefault('ctx', '')  # fiche illisible : on garde ce que l'API a donné
     try:
