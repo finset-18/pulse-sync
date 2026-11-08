@@ -15,7 +15,8 @@ from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, AGG, is_hl
 
 PER_PASS = int(os.environ.get('AGG_PER_PASS', '30'))
 # Google et Glassdoor ne renvoient rien depuis les serveurs GitHub (Glassdoor répond 403) : leurs tours sont laissés à Indeed
-JS_SITES = set(os.environ.get('AGG_SITES', 'indeed').split(','))
+JS_SITES = set(os.environ.get('AGG_SITES', 'indeed,hellowork,linkedin').split(','))
+LANE_BUDGET_S = float(os.environ.get('AGG_LANE_BUDGET_S', '900'))  # temps maximum par site et par passage (LinkedIn, HelloWork lisent chaque fiche)
 HOURS = int(os.environ.get('AGG_HOURS', str(24 * 21)))
 
 FR = ['stage M&A', 'stage fusions acquisitions', 'stage private equity', 'stage capital investissement', 'stage venture capital',
@@ -32,24 +33,24 @@ EN = ['investment banking intern', 'M&A intern', 'private equity intern', 'ventu
       'risk management intern']
 # (pays Indeed/Glassdoor, lieu, requêtes, sites JobSpy)
 ZONES = [
-    ('france', 'Paris', FR, ('indeed', 'glassdoor', 'google')),
-    ('france', 'Lyon', FR[:10], ('indeed', 'google')),
-    ('uk', 'London', EN, ('indeed', 'glassdoor', 'google')),
-    ('luxembourg', 'Luxembourg', EN[:12] + ['stage finance', 'stage fonds'], ('indeed', 'google')),
-    ('switzerland', 'Zürich', EN[:12], ('indeed', 'google')),
-    ('switzerland', 'Genève', FR[:12], ('indeed', 'google')),
-    ('belgium', 'Bruxelles', FR[:10] + EN[:6], ('indeed', 'google')),
-    ('germany', 'Frankfurt', EN[:12], ('indeed', 'glassdoor', 'google')),
-    ('netherlands', 'Amsterdam', EN[:10], ('indeed', 'google')),
+    ('france', 'Paris', FR, ('indeed', 'glassdoor', 'google', 'hellowork', 'linkedin')),
+    ('france', 'Lyon', FR[:10], ('indeed', 'google', 'hellowork')),
+    ('uk', 'London', EN, ('indeed', 'glassdoor', 'google', 'linkedin')),
+    ('luxembourg', 'Luxembourg', EN[:12] + ['stage finance', 'stage fonds'], ('indeed', 'google', 'linkedin')),
+    ('switzerland', 'Zürich', EN[:12], ('indeed', 'google', 'linkedin')),
+    ('switzerland', 'Genève', FR[:12], ('indeed', 'google', 'linkedin')),
+    ('belgium', 'Bruxelles', FR[:10] + EN[:6], ('indeed', 'google', 'linkedin')),
+    ('germany', 'Frankfurt', EN[:12], ('indeed', 'glassdoor', 'google', 'linkedin')),
+    ('netherlands', 'Amsterdam', EN[:10], ('indeed', 'google', 'linkedin')),
     ('usa', 'New York, NY', EN, ('indeed', 'glassdoor', 'google')),
     ('spain', 'Madrid', EN[:8], ('indeed', 'google')),
     ('italy', 'Milan', EN[:8], ('indeed', 'google')),
     ('ireland', 'Dublin', EN[:8], ('indeed', 'google')),
-    ('france', 'Lille', FR[:10], ('indeed',)),
-    ('france', 'Bordeaux', FR[:6], ('indeed',)),
-    ('france', 'Nantes', FR[:6], ('indeed',)),
-    ('france', 'Marseille', FR[:6], ('indeed',)),
-    ('france', 'France', FR, ('indeed',)),
+    ('france', 'Lille', FR[:10], ('indeed', 'hellowork')),
+    ('france', 'Bordeaux', FR[:6], ('indeed', 'hellowork')),
+    ('france', 'Nantes', FR[:6], ('indeed', 'hellowork')),
+    ('france', 'Marseille', FR[:6], ('indeed', 'hellowork')),
+    ('france', 'France', FR, ('indeed', 'hellowork')),
     ('hong kong', 'Hong Kong', EN[:10], ('indeed',)),
     ('singapore', 'Singapore', EN[:10], ('indeed',)),
     ('united arab emirates', 'Dubai', EN[:8], ('indeed',)),
@@ -90,6 +91,8 @@ def run_jobspy(site, country, loc, q):
               description_format='markdown', verbose=0)
     if site == 'google':
         kw['google_search_term'] = f'{q} {loc} since last month'
+    if site in ('linkedin', 'hellowork'):  # fiche complète lue pour chaque offre : durée et début écrits
+        kw.update(fetch_description=True, job_type='internship', results_wanted=20 if site == 'linkedin' else 40)
     df = scrape_jobs(**kw)
     out = []
     for r in df.to_dict('records'):
@@ -199,8 +202,9 @@ def run_aggregators(structs, recettes, run_no, log=print):
         by_site.setdefault(t[1], []).append(t)
 
     def lane(ts):
-        res = []
+        res, t0 = [], time.time()
         for t in ts:
+            if time.time() - t0 > LANE_BUDGET_S: break  # le reste de la tranche repasse au cycle suivant
             res.append(one(t))
             time.sleep(1.5)
         return res
