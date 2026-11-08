@@ -21,6 +21,7 @@ from commun import *  # noqa
 from taxonomie import metier_of, front_of, famx_of, langs_of, contact_of, norm as tnorm
 
 SCHEMA = 2
+FIX_V = 1  # version de la passe de correction des dates déjà enregistrées (jamais d'effacement : seulement une date écrite qui en remplace une autre)
 DATES_V = 4  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
@@ -177,14 +178,16 @@ def dates_text(offers):
         if not o.get('months') or o.get('months_src') == 'programme':
             m = months_with_title(o['title'], src)
             if m and m <= 24: o['months'] = m; o['months_src'] = 'texte'
-        if not o.get('start') or o.get('start_src') in ('programme', 'saison'):
+        fix = o.get('fix_v') != FIX_V  # passe de correction (une fois par version) : une date écrite relue avec les règles actuelles remplace une valeur des anciennes règles
+        if not o.get('start') or o.get('start_src') in ('programme', 'saison') or (fix and o.get('start_src') == 'texte' and not o.get('start_asap')):
             s = start_with_title(o['title'], src)
             if s: o['start'] = s; o['start_src'] = 'texte'; o.pop('start_asap', None)
             elif not o.get('start') and (start_asap(o['title']) or start_asap(src)): o['start_asap'] = 1
-            elif not o.get('start'):  # saison écrite (« Summer 2027 ») : mois de début habituel, marqué « saison »
+            elif not o.get('start') or (fix and o.get('start_src') == 'texte' and not o.get('start_asap')):  # saison écrite (« Summer 2027 ») : mois de début habituel, marqué « saison »
                 ss, _lab = season_of(src, title=o['title'])
                 if ss and ss >= NOW.strftime('%Y-%m'): o['start'] = ss; o['start_src'] = 'saison'
         if o.get('start') and o['start'] < NOW.strftime('%Y-%m') and o.get('start_src') in ('programme', 'saison'): o['start'] = None
+        o['fix_v'] = FIX_V
     # fiches lues au navigateur (job « nav » : eFinancialCareers, Welcome to the Jungle, Indeed, et lien officiel de l'employeur)
     nav = load('dates_nav.json', {}) or {}
     for oid, r in nav.items():
@@ -517,7 +520,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v')
 
 
 def write_lite(out, updated):

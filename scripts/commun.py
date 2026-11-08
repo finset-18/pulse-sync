@@ -341,7 +341,7 @@ MONY = r"(" + MONTH_RE + r")\.?\s*(20\d{2})?"
 RANGE_SEP = r"\s*(?:-|–|—|à|au|a|to|till|until|through|thru|bis|tot en met|tot|t/m|hasta|al|jusqu['’]?(?:au|à|en)?|/)\s*(?:(?:early|mid|late|début|mi|fin)[\s-]+)?"
 
 
-GRAD_CTX = re.compile(r"graduat|dipl[oô]m[ée]?s?\b|obtention du|class of|promo(?:tion)?\s+20", re.I)  # dates de diplôme ou d'études, pas le stage
+GRAD_CTX = re.compile(r"graduat|dipl[oô]m[ée]?s?\b|obtention du|class of|promo(?:tion)?\s+20|full[- ]?time (?:employment|role|position|offer|hire)|return offer|cdi\b|embauche|e? ?nroll?ed|inscrit", re.I)  # dates de diplôme, d'études ou d'embauche après le stage, pas le stage
 
 
 def period_of(text):
@@ -365,6 +365,14 @@ def period_of(text):
         a, b, y2 = MONTHS[mo1], MONTHS[mo2], int(y2)
         y1 = int(y1) if y1 else (y2 if a <= b else y2 - 1)
         n = _months_between(y1, a, y2, b)
+        if n: return f"{y1}-{a:02d}", n
+    # format américain : « June 7, 2027 – August 13, 2027 », « January 4 to April 30, 2027 », « Monday, June 7th through Friday, August 13th 2027 »
+    for m in re.finditer(r"\b(" + MONTH_RE + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(20\d{2}))?" + RANGE_SEP + r"(?:[a-z]+day,?\s+)?(" + MONTH_RE + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(20\d{2})\b", t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
+        mo1, d1, y1, mo2, d2, y2 = m.groups()
+        a, b, y2 = MONTHS[mo1], MONTHS[mo2], int(y2)
+        y1 = int(y1) if y1 else (y2 if a <= b else y2 - 1)
+        n = _months_between(y1, a, y2, b, int(d1), int(d2))
         if n: return f"{y1}-{a:02d}", n
     return None, None
 
@@ -454,7 +462,7 @@ def _start_of(text, loose=True):
         if 1 <= mo <= 12: return f"{y}-{mo:02d}"
     # 2b. date suivie du mot de début (« for a September 2027 start », « janvier 2027 intake »)
     for m in re.finditer(r'\b(' + MONTH_RE + r')\.?\s*(20\d{2})\s*(?:start(?:ing)?|start date|intake|entry|cohort)\b', t):
-        if WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]): continue
+        if WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
     # 2c. date juste après le nom du stage (« Stage de 6 mois – janvier 2027 », « Internship (June 2027) »), sans mot de fin ou de candidature entre les deux
     for m in re.finditer(r"\b(?:stage|stagiaire|internship|intern|placement|off[- ]?cycle|alternance|apprentissage|apprenticeship|v\.?i\.?e)\b([^.\n;]{0,40}?)\b(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
