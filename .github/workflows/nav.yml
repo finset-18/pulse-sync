@@ -42,7 +42,7 @@ jobs:
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           NAV_BUDGET_S: "2700"
-          NAV_CONC: "4"
+          NAV_CONC: "6"
         run: |
           s=0; python scripts/nav.py > run.log 2>&1 || s=$?
           grep '^nav' run.log | tail -n 3 | cut -c1-300 || true

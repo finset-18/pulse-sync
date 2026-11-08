@@ -12,13 +12,18 @@ Les dates ne sont gardées que si elles sont écrites (mêmes règles que le rob
 """
 import asyncio, json, os, re, sys, time
 from commun import (load, save, NOW, NOW_ISO, start_with_title, months_with_title, start_asap, date_ctx, data_dates,
-                    bad_page, direct_ok, efc_official, get, clean)
+                    bad_page, direct_ok, efc_official, get, clean, EXPIRED)
 
 V = 1  # version de la lecture : la monter relit tout
 VIAS = ('efc', 'wttj_search', 'wttj', 'indeed')
+# sites qui refusent le serveur (diagnostic du 08/11) : lus au navigateur quelle que soit la source de l'offre
+HOSTS = re.compile(r"recrutement\.bpce\.fr|apply\.workable\.com|welcometothejungle\.com|indeed\.", re.I)
+# autres offres jamais lues en entier (fiche d'API tronquée, page JavaScript) : lues aussi, après les autres ; LinkedIn a sa propre relecture
+OTHER_SKIP = ('linkedin',)
 BUDGET_S = float(os.environ.get('NAV_BUDGET_S', '2700'))
 CONC = int(os.environ.get('NAV_CONC', '4'))
 RETRY_DAYS = 7  # une fiche lue sans date est relue au bout d'une semaine (l'employeur complète parfois l'annonce)
+RETRY_BLOCKED_DAYS = 1  # une fiche restée bloquée est retentée le lendemain
 UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) '
       'Chrome/130.0.0.0 Safari/537.36')
 BLOCK = re.compile(r"just a moment|verify you are human|v[ée]rifi(?:ez|cation) que vous [êe]tes|captcha|access denied|"
@@ -77,6 +82,10 @@ async def read(ctx, url):
                 pass
         text = clean(await page.inner_text('body'))
         html = await page.content()
+        final = page.url or ''
+        # offre retirée : page « offre expirée », ou fiche WTTJ renvoyée vers l'accueil ou la liste des offres
+        if EXPIRED.search(text[:6000]) or ('welcometothejungle.com' in url and '/jobs/' in url and '/jobs/' not in final):
+            return 'DEAD', None, []
         links = await page.eval_on_selector_all('a[href]', 'els => els.map(e => e.href)')
         off = [u for u in dict.fromkeys(links) if direct_ok(u)][:5]
         if bad_page(text) or (len(text) < 4000 and BLOCK.search(text[:2000])): return None, None, off
@@ -106,6 +115,9 @@ async def one(browser, sem, o, res, stats, t0):
             except Exception:
                 page = None
             official = page[2] if page else []
+            if page and page[0] == 'DEAD':
+                out['dead'] = 1; stats['dead'] += 1; stats['read'] += 1
+                return
             if page and page[0]:
                 got, src = judge(o, page[0], page[1]), 'page'
             else:
@@ -122,7 +134,7 @@ async def one(browser, sem, o, res, stats, t0):
                         p2 = await asyncio.wait_for(read(ctx, u), timeout=60)
                     except Exception:
                         p2 = None
-                    if not p2 or not p2[0]: continue
+                    if not p2 or not p2[0] or p2[0] == 'DEAD': continue
                     g2 = judge(o, p2[0], p2[1])
                     if not got:
                         got, src = g2, 'officiel'
@@ -153,21 +165,28 @@ async def main_async():
     if isinstance(offers, list): offers = {o['id']: o for o in offers if isinstance(o, dict) and o.get('id')}
     res = load('dates_nav.json', {}) or {}
     res = {k: v for k, v in res.items() if k in offers and offers[k].get('status') == 'open'}  # offres fermées : oubliées
-    limit = (NOW.timestamp() - RETRY_DAYS * 86400)
     todo = []
     for oid, o in offers.items():
-        if o.get('status') != 'open' or o.get('via') not in VIAS or not (o.get('url') or '').startswith('http'): continue
+        if o.get('status') != 'open' or o.get('dup_of') or not (o.get('url') or '').startswith('http'): continue
+        main_site = o.get('via') in VIAS or bool(HOSTS.search(o['url']))
+        other = not main_site and o.get('via') not in OTHER_SKIP and not o.get('full')  # jamais lue en entier ailleurs
+        if not (main_site or other): continue
         s_ok, m_ok = written(o)
         if s_ok and m_ok: continue
         r = res.get(oid) or {}
+        if r.get('dead'): continue  # déjà vue retirée : le tracker la ferme
         if r.get('v') == V:
-            try: fresh = time.mktime(time.strptime(r.get('at', '')[:19], '%Y-%m-%dT%H:%M:%S')) > limit
+            days = RETRY_DAYS if r.get('ok') else RETRY_BLOCKED_DAYS
+            try: fresh = time.mktime(time.strptime(r.get('at', '')[:19], '%Y-%m-%dT%H:%M:%S')) > NOW.timestamp() - days * 86400
             except Exception: fresh = False
             if fresh: continue
+        o['_rank'] = (0 if not r else 1 if not r.get('ok') else 2, 0 if main_site else 1)
         todo.append(o)
-    todo.sort(key=lambda o: o.get('first_seen') or '', reverse=True)  # les plus récentes d'abord
+    # jamais lues d'abord (les relectures bloquées du serveur en tête), puis les pages restées bloquées, puis les relectures ; récentes d'abord à rang égal
+    todo.sort(key=lambda o: o.get('first_seen') or '', reverse=True)
+    todo.sort(key=lambda o: (o['_rank'][0], 0 if o.get('dk_wait') else 1, o['_rank'][1]))
     print(f'nav : {len(todo)} fiches à lire', flush=True)
-    stats = dict(read=0, blocked=0, official=0, start=0, months=0, fail=0)
+    stats = dict(read=0, blocked=0, official=0, start=0, months=0, fail=0, dead=0)
     t0 = time.time()
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage',
@@ -180,10 +199,10 @@ async def main_async():
     for o in todo:
         r = res.get(o['id']) or {}
         if r.get('at') != NOW_ISO: continue
-        b = by.setdefault(o['via'], [0, 0, 0])
+        b = by.setdefault(o['via'] if o['via'] in VIAS else 'autres', [0, 0, 0])
         b[0] += 1; b[1] += 1 if r.get('ok') else 0; b[2] += 1 if (r.get('start') or r.get('asap')) else 0
     print(f"nav : {stats['read']} fiches lues en {int(time.time() - t0)} s, bloquées {stats['blocked']}, "
-          f"liens officiels suivis {stats['official']}, début trouvé {stats['start']}, durée trouvée {stats['months']}, pannes {stats['fail']}", flush=True)
+          f"liens officiels suivis {stats['official']}, début trouvé {stats['start']}, durée trouvée {stats['months']}, retirées {stats['dead']}, pannes {stats['fail']}", flush=True)
     print('nav par site (lues / page lisible / début trouvé) : ' + ', '.join(f'{k} {v[0]}/{v[1]}/{v[2]}' for k, v in sorted(by.items())), flush=True)
     return 0 if stats['read'] or not todo else 1
 

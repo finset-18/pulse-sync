@@ -1,0 +1,46 @@
+name: nouvelles
+
+# Structures financières créées ou agréées depuis 12 mois (BODACC, AMF GECO, API Recherche d'entreprises), une fois par semaine.
+# Écrit data/nouvelles.json dans le dépôt de données ; le site l'affiche dans le Tracker. Le journal ne montre que des comptes.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nouvelles
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests==2.32.3
+      - name: liste
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+        run: python scripts/nouvelles.py 2>&1 | grep -E '^(BODACC|GECO) :|"(total|deja_connus|duree_s)"|^(Traceback|[A-Za-z]+Error)' | cut -c1-200
+      - name: save
+        working-directory: store
+        run: |
+          [ -f data/nouvelles.json ] || exit 0
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add data/nouvelles.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "nouvelles $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase --autostash -X theirs && git push -q && exit 0; sleep $((i * 7)); done
+          exit 1
