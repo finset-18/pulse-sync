@@ -21,7 +21,7 @@ from commun import *  # noqa
 from taxonomie import metier_of, front_of, famx_of, langs_of, contact_of, norm as tnorm
 
 SCHEMA = 2
-DATES_V = 3  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
+DATES_V = 4  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
 MAX_DETAILS = int(os.environ.get('MAX_DETAILS', '800'))
