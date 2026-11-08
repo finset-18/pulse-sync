@@ -193,7 +193,9 @@ def dates_text(offers):
     nav = load('dates_nav.json', {}) or {}
     for oid, r in nav.items():
         o = offers.get(oid)
-        if not o or o['status'] != 'open' or not isinstance(r, dict) or not r.get('ok'): continue
+        if not o or o['status'] != 'open' or not isinstance(r, dict): continue
+        if r.get('dead') and not r.get('ok'): o['nav_dead'] = r.get('at') or NOW_ISO; continue  # page « offre expirée » vue au navigateur : fermée plus bas
+        if not r.get('ok'): continue
         if r.get('ctx') and len(r['ctx']) > len(o.get('ctx') or ''): o['ctx'] = r['ctx']  # passages datés complets, relus aussi par le modèle local
         weak = not o.get('start') or o.get('start_src') in ('programme', 'saison', 'ia')
         if r.get('start') and r['start'] >= NOW.strftime('%Y-%m') and weak and not o.get('start_asap'):
@@ -537,7 +539,7 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v', 'li_v', 'li_reset')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v', 'li_v', 'li_reset', 'nav_dead')
 
 
 def write_lite(out, updated):
@@ -1039,6 +1041,7 @@ def main():
         dl = str(o.get('deadline') or '')[:10]
         if re.match(r'20\d{2}-\d{2}-\d{2}$', dl) and dl < today: close(o, 'deadline')
         elif YEAR_CLOSE and past_title(o.get('title')): close(o, 'annee_passee'); year_closed += 1
+        elif o.get('nav_dead') and o['nav_dead'] >= (o.get('last_seen') or ''): close(o, 'expiree')  # retirée par l'employeur (vue au navigateur), pas revue depuis
     # réversible : une fermeture « année passée » récente que la règle ne confirme plus est annulée
     year_revert = (NOW - dt.timedelta(days=YEAR_REVERT_DAYS)).isoformat()
     for o in offers.values():

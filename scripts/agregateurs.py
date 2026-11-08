@@ -15,7 +15,7 @@ from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, AGG, is_hl
 
 PER_PASS = int(os.environ.get('AGG_PER_PASS', '30'))
 # Google et Glassdoor ne renvoient rien depuis les serveurs GitHub (Glassdoor répond 403) : leurs tours sont laissés à Indeed
-JS_SITES = set(os.environ.get('AGG_SITES', 'indeed,hellowork,linkedin').split(','))
+JS_SITES = set(os.environ.get('AGG_SITES', 'indeed,hellowork,linkedin,google').split(','))  # Google Jobs : fiches officielles des employeurs reprises par Google
 LANE_BUDGET_S = float(os.environ.get('AGG_LANE_BUDGET_S', '900'))  # temps maximum par site et par passage (LinkedIn, HelloWork lisent chaque fiche)
 HOURS = int(os.environ.get('AGG_HOURS', str(24 * 21)))
 
