@@ -85,12 +85,13 @@ def official_site(c):
 # ---------------------------------------------------------------- filtres
 INTERN = re.compile(r"(\bintern\b|\binterns\b|internship|\bstage\b|\bstages\b|stagiaire|off[\s-]?cycle|summer (?:analyst|associate|intern|internship|programme|program)|"
                     r"praktik|werkstudent|\btrainee\b|apprenti|alternan|volontariat international|graduate|spring (?:week|insight)|"
-                    r"insight (?:week|programme|program)|industrial placement|placement year|stagiair|tirocinio|pr[aá]cticas|becario|working student)", re.I)
+                    r"insight (?:week|programme|program)|industrial placement|placement year|stagiair|tirocinio|pr[aá]cticas|becario|working student|"
+                    r"placement analyst|placement (?:student|programme|program|scheme)|\b(?:6|9|12|13)[- ]month placement|year[- ]long placement|co-?op (?:analyst|associate|intern|student|program(?:me)?|position)|\(co-?op\)|student worker|student job|job [ée]tudiant|c[ée]sure|gap[- ]year|fin d['’]\s*[ée]tudes|\bpfe\b|contrat de professionnalisation|contrat pro\b)", re.I)
 INTERN_COMMIT = re.compile(r"intern|stage|stagiaire|apprenti|alternan|trainee|praktik|werkstudent|working student|\bvie\b|graduate", re.I)
 EXCLUDE = re.compile(r"(senior|director|directeur|head of|vice president|\bvp\b|managing|manager(?! intern)|principal\b|partner\b|lead\b|chief|expert confirm)", re.I)
 # mot de stage explicite : « manager », « lead » ou « partner » dans l'intitulé nomment alors le métier (Stage Wealth Manager, Summer Analyst Lead Advisory Team)
 EXPLICIT_STAGE = re.compile(r"\bintern\b|\binterns\b|internship|\bstages?\b|stagiaire|stagiair|off[\s-]?cycle|summer (?:analyst|associate|intern|internship)|praktik|werkstudent|"
-                            r"working student|\btrainee\b|apprenti|alternan|volontariat international|tirocinio|pr[aá]cticas|becario", re.I)
+                            r"working student|\btrainee\b|apprenti|alternan|volontariat international|tirocinio|pr[aá]cticas|becario|placement analyst|co-?op (?:analyst|associate|intern|student)|\(co-?op\)|student worker", re.I)
 # vrais seniors : refusés même avec un mot de stage
 REAL_SENIOR = re.compile(r"senior|\bsr\b|director|directeur|directrice|head of|vice president|\bvp\b|managing|chief|principal\b|expert confirm", re.I)
 SENIOR_OK = re.compile(r"assistant(?:e)?s?(?:\(e\))?\s+(?:(?:du|de la|de|au|à la|to the|to|of)\s+)?(?:managing |direction|directeur|directrice|director)\S*|principal invest\w*", re.I)
@@ -217,6 +218,8 @@ def not_offer(title):
     words = t.split()
     if len(words) > 18 or (len(t) > 80 and t.endswith(('.', '!', '?'))): return True  # une phrase, pas un intitulé
     if PAGE_HEAD.search(t):
+        # « Early Careers Internship Program AI Security », « Early Career Intern - Product » : une offre, pas le titre de la page Early Careers
+        if re.match(r"\s*early careers?\s+(?:internships?|interns?)\b", t, re.I) and len(re.findall(r"[^\W\d_]{3,}", re.sub(r"(?i)\b(?:early|careers?|internships?|interns?|programmes?|programs?|20\d\d)\b", ' ', t))) >= 2: return False
         rest = PAGE_HEAD.sub(' ', t, count=1)
         rest = re.sub(r"\b(?:stages?|internships?|intern|graduates?|programmes?|programs?|alternances?|summer|spring|20\d\d|chez|at|de|des|du|la|le|les|nos|our|and|et|&)\b", ' ', rest, flags=re.I)
         if not OFFER_ROLE.search(rest): return True
@@ -291,7 +294,7 @@ def keep_offer(x):
 
 def contract_of(t):
     t = (t or '').lower()
-    if re.search(r'alternan|apprenti|work[- ]study|werkstudent|working student', t): return 'Alternance'
+    if re.search(r'alternan|apprenti|work[- ]study|werkstudent|working student|student worker|professionnalisation|contrat pro\b', t): return 'Alternance'
     if re.search(r'\bv\.?\s?i\.?\s?e\b|volontariat international', t): return 'VIE'
     if re.search(r'summer', t): return 'Summer'
     if re.search(r'off[\s-]?cycle', t): return 'Off-cycle'
@@ -317,7 +320,7 @@ DUR_BEFORE_SKIP = re.compile(r"(?:dans les|within|every|tous les|toutes les|chaq
 WINDOW_CTX = re.compile(r"(?:candidat|application|apply|postul|bewerb|sollicit|solicitud|plazo|recrutement|recruitment|deadline|date limite|entretiens?|interviews?|cl[ôo]tur|closing|publi[ée]|posted|valable|jusqu)", re.I)
 END_GAP = re.compile(r"\b(?:fin|end|ending|until|till|bis|tot|fino|hasta|jusqu\w*|to|au|aux|à|deadline|limite|avant|before|by|cl[ôo]tur\w*|close[sd]?|closing|expir\w*|valable|candidat\w*|applications?|apply|postul\w*)\b", re.I)
 ASAP_RE = re.compile(r"\b(?:asap|a\.s\.a\.p|as soon as possible|d[èe]s que possible|imm[ée]diatement|immediate(?:ly)?|d[èe]s maintenant|au plus t[ôo]t|d[èe]s à pr[ée]sent|ab sofort|per direct|zo snel mogelijk|quanto prima|al pi[uù] presto|lo antes posible|cuanto antes)\b", re.I)
-START_KW = re.compile(r"(?:date de d[ée]but|d[ée]but(?: du stage| de stage| de mission)?|start(?:ing)?(?: date)?|starts|commen\w+|à partir d[eu]|a partir d[eu]|à compter d[eu]|disponibilit[ée]|à pourvoir|prise de poste|prises? de fonctions?|entr[ée]e en fonctions?|date d['’]\s*entr[ée]e|arriv[ée]e(?: souhait[ée]e| pr[ée]vue)?|available from|joining date|beginn|eintrittsdatum|eintritt|startdatum|ingangsdatum|data di inizio|inizio|fecha de inicio|fecha de incorporaci[óo]n|incorporaci[óo]n|a partir del?|d[ée]marrage|intake|int[ée]gration|beginning|starting from|d[èe]s (?=(?:" + MONTH_RE + r")\b)|\bab (?=(?:" + MONTH_RE + r")\b)|\bper (?=(?:" + MONTH_RE + r")\b))", re.I)
+START_KW = re.compile(r"(?:date de d[ée]but|d[ée]but(?: du stage| de stage| de mission)?|start(?:ing)?(?: date)?|starts|commen\w+|[àa] partir d(?:[eu]|['’])|[àa] compter d(?:[eu]|['’])|rentr[ée]e (?:de |d['’]\s*)(?=(?:" + MONTH_RE + r")\b)|d[èe]s le mois d(?:e |['’]\s*)|\bfrom (?=(?:(?:the )?(?:early|mid|late|beginning of|start of)[\s-]+)?(?:" + MONTH_RE + r")\b)|disponibilit[ée]|à pourvoir|prise de poste|prises? de fonctions?|entr[ée]e en fonctions?|date d['’]\s*entr[ée]e|arriv[ée]e(?: souhait[ée]e| pr[ée]vue)?|available from|joining date|beginn|eintrittsdatum|eintritt|startdatum|ingangsdatum|data di inizio|inizio|fecha de inicio|fecha de incorporaci[óo]n|incorporaci[óo]n|a partir del?|d[ée]marrage|intake|int[ée]gration|beginning|starting from|d[èe]s (?=(?:" + MONTH_RE + r")\b)|\bab (?=(?:" + MONTH_RE + r")\b)|\bper (?=(?:" + MONTH_RE + r")\b))", re.I)
 
 
 def _num(s):
@@ -359,6 +362,13 @@ def period_of(text):
         d1, mo1, y1, d2, mo2, y2 = m.groups()
         n = _months_between(int(y1), MONTHS[mo1], int(y2), MONTHS[mo2], int(d1), int(d2))
         if n: return f"{y1}-{MONTHS[mo1]:02d}", n
+    for m in re.finditer(r"(?:du\s+|from\s+|de\s+)?\b(\d{1,2})(?:er|st|nd|rd|th)?\s+(" + MONTH_RE + r")\.?" + RANGE_SEP + r"(\d{1,2})(?:er|st|nd|rd|th)?\s+(" + MONTH_RE + r")\.?,?\s+(20\d{2})\b", t):
+        if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
+        d1, mo1, d2, mo2, y2 = m.groups()
+        a, b, y2 = MONTHS[mo1], MONTHS[mo2], int(y2)
+        y1 = y2 if a <= b else y2 - 1
+        n = _months_between(y1, a, y2, b, int(d1), int(d2))
+        if n: return f"{y1}-{a:02d}", n
     for m in re.finditer(r"\b(?:de\s+|d['’]\s*|from\s+|du mois de\s+|von\s+|van\s+|de\s+|(?:early|mid|late|début|mi)[\s-]+)?" + MONY + RANGE_SEP + r"(?:fin\s+|end of\s+)?" + r"(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
         if WINDOW_CTX.search(t[max(0, m.start() - 45):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
         mo1, y1, mo2, y2 = m.groups()
@@ -435,51 +445,121 @@ def _year_for(mo):
     return NOW.year if mo >= NOW.month else NOW.year + 1
 
 
-def _start_of(text, loose=True):
+QUALIF = re.compile(r"^\s*(?:(?:la |le |the )?(?:fin|end of|d[ée]but|mi|mid|early|late|beginning of|start of|courant|mois d(?:e |['’]))[\s-]*(?:de |d['’]\s*|of )?)+", re.I)
+ALT_NEXT = re.compile(r"^[^.;\n]{0,25}?\b(?:(?:ou|or|oder|voire)\b(?:(?!\b(?:fin|end|ends|ending|until|till|jusqu\w*|bis)\b)[^.;\n]){0,30}?|(?:et|and|und|puis)\s+(?:en\s+|in\s+|im\s+)?)\b(" + MONTH_RE + r")\.?\s*(20\d{2})\b", re.I)
+NEAR = 250  # une date de repli se lit près de la date passée qu'elle remplace, pas à l'autre bout de la page
+
+
+def _start_of(text, loose=True, future=False):
     t = (text or '').lower().replace(' ', ' ')
     # 1. période écrite en clair (« juillet à décembre 2027 », « du 05/01/2027 au 30/06/2027 ») : le début, pas la fin
     s, _ = period_of(t)
     if s: return s
     # 2. mot-clé de début suivi d'une date ; rien entre les deux qui parle de fin ou de date limite
+    cur = NOW.strftime('%Y-%m')
+    past = []  # position de la première date passée rencontrée
+
+    def late(r, pos):  # date déjà passée : on continue à chercher, mais seulement tout près (« septembre 2026 ou janvier 2027 »)
+        if not future: return False
+        if r < cur:
+            if not past: past.append(pos)
+            return True
+        return bool(past) and abs(pos - past[0]) > NEAR
+
+    def alt(end):  # autre date proposée juste après une date passée
+        a = ALT_NEXT.search(t[end:end + 90])
+        if a:
+            r2 = f"{a.group(2)}-{MONTHS[a.group(1)]:02d}"
+            if r2 >= cur: return r2
+        return None
     for k in START_KW.finditer(t):
         win = t[k.end():k.end() + 45]
-        cut = re.search(r'[.\n;]', win)
+        cut = re.search(r'[\n;]|\.(?!\s*20\d{2})', win)
         if cut: win = win[:cut.start()]
+        frm = k.group(0).startswith('from')
+        if frm and (WINDOW_CTX.search(t[max(0, k.start() - 40):k.start()]) or GRAD_CTX.search(t[max(0, k.start() - 60):k.start()])): continue
         pats = ((r'(' + MONTH_RE + r')\.?\s*(20\d{2})\b', lambda m: (int(m.group(2)), MONTHS[m.group(1)])),
                 (r'(20\d{2})-(\d{2})(?:-\d{2})?\b', lambda m: (int(m.group(1)), int(m.group(2)))),
                 (r'\b(\d{1,2})[/.](\d{1,2})[/.](20\d{2})\b', lambda m: (int(m.group(3)), int(m.group(2)))),
                 (r'\b(\d{1,2})/(20\d{2})\b', lambda m: (int(m.group(2)), int(m.group(1)))),
                 (r'\b(' + MONTH_RE + r')\b(?!\.?\s*\d)', lambda m: (_year_for(MONTHS[m.group(1)]), MONTHS[m.group(1)])))
         best = None
-        for p, f in pats:
+        for i, (p, f) in enumerate(pats):
+            if frm and i == 4: continue  # « from May » sans année : trop ambigu
             m = re.search(p, win)
             if m and (best is None or m.start() < best[0].start()): best = (m, f)
         if not best: continue
         m, f = best
-        gap = win[:m.start()]
+        gap = QUALIF.sub('', win[:m.start()])  # « à partir de fin janvier », « from mid-January » : la date reste un début
         if END_GAP.search(gap) or len(gap) > 30: continue
         y, mo = f(m)
-        if 1 <= mo <= 12: return f"{y}-{mo:02d}"
+        if 1 <= mo <= 12:
+            r = f"{y}-{mo:02d}"
+            if not late(r, k.start()): return r
+            if r >= cur: continue
+            r2 = alt(k.end() + m.end())
+            if r2: return r2
     # 2b. date suivie du mot de début (« for a September 2027 start », « janvier 2027 intake »)
     for m in re.finditer(r'\b(' + MONTH_RE + r')\.?\s*(20\d{2})\s*(?:start(?:ing)?|start date|intake|entry|cohort)\b', t):
         if WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]) or GRAD_CTX.search(t[max(0, m.start() - 60):m.start()]): continue
-        return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
+        r = f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
+        if not late(r, m.start()): return r
     # 2c. date juste après le nom du stage (« Stage de 6 mois – janvier 2027 », « Internship (June 2027) »), sans mot de fin ou de candidature entre les deux
     for m in re.finditer(r"\b(?:stage|stagiaire|internship|intern|placement|off[- ]?cycle|alternance|apprentissage|apprenticeship|v\.?i\.?e)\b([^.\n;]{0,40}?)\b(" + MONTH_RE + r")\.?\s*(20\d{2})\b", t):
         gap = m.group(1)
-        if END_GAP.search(gap) or WINDOW_CTX.search(gap) or WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]): continue
-        return f"{m.group(3)}-{MONTHS[m.group(2)]:02d}"
+        if END_GAP.search(QUALIF.sub('', gap)) and END_GAP.search(gap) or WINDOW_CTX.search(gap) or WINDOW_CTX.search(t[max(0, m.start() - 40):m.start()]): continue
+        r = f"{m.group(3)}-{MONTHS[m.group(2)]:02d}"
+        if not late(r, m.start()): return r
+        if r >= cur: continue
+        r2 = alt(m.end())
+        if r2: return r2
     if not loose: return None
     # 3. titre : « Stage M&A – janvier 2027 » (mais pas « Clôture 15 janvier 2027 »)
     for m in re.finditer(r'\b(' + MONTH_RE + r')\.?\s+(20\d{2})', t):
         if re.search(r'(?:cl[ôo]tur\w*|deadline|limite|avant|before|until|jusqu\w*|apply by|\bfin|\bend|expir\w*)\W*(?:le\s+|du\s+|on\s+|au\s+)?(?:\d{1,2}(?:er|st|nd|rd|th)?\s*)?$', t[max(0, m.start() - 30):m.start()]): continue
-        return f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
+        r = f"{m.group(2)}-{MONTHS[m.group(1)]:02d}"
+        if not late(r, m.start()): return r
     return None
 
 
 def start_of(text, loose=True):
-    r = _start_of(text, loose) or semester_start(text) or (quarter_start(text) if loose else None)  # trimestre : seulement dans le titre
+    r = _start_of(text, loose, future=True) or semester_start(text) or (quarter_start(text) if loose else None)  # trimestre : seulement dans le titre
     return r if r and r >= NOW.strftime('%Y-%m') else None
+
+
+FR_MONTH = r"janvier|janv|f[ée]vrier|f[ée]vr|avril|avr|juin|juillet|juil|ao[uû]t|septembre|octobre|novembre|d[ée]cembre|déc"
+BARE_OK = {'janvier', 'février', 'fevrier', 'avril', 'juin', 'juillet', 'août', 'aout', 'septembre', 'octobre', 'novembre', 'décembre', 'decembre',
+           'january', 'february', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december', 'januar', 'februar'}  # ni « May », « March », « Mars », « Mayo » (noms propres)
+YY = lambda: {NOW.year % 100 + i for i in range(3)}
+
+
+def title_extra(title):
+    """Formes courtes propres aux titres : « Janv. 27 », « Dec 26/Jan 27 », « Jan '27 », mois seul entre séparateurs (« Stage - Janvier - Juriste »)."""
+    t = (title or '').lower().replace(' ', ' ')
+    cur = NOW.strftime('%Y-%m')
+    if WINDOW_CTX.search(t): return None
+    cands = []
+    for m in re.finditer(r"\b(" + MONTH_RE + r")\.?\s*['’]?(\d{2})\s*/\s*(" + MONTH_RE + r")\.?\s*['’]?(\d{2})\b(?![\d/.:])", t):  # « Dec 26/Jan 27 »
+        cands += [(m.group(1), m.group(2)), (m.group(3), m.group(4))]
+    for m in re.finditer(r"\b(" + MONTH_RE + r")\.?\s*['’](\d{2})\b(?![\d/.:])", t): cands.append((m.group(1), m.group(2)))  # « Jan '27 »
+    for m in re.finditer(r"(?<![\d/])\b(" + FR_MONTH + r")\.?\s+(\d{2})\b(?![\d/.:h])", t): cands.append((m.group(1), m.group(2)))  # « Janv. 27 » (en français le jour précède le mois)
+    for mo, yy in cands:
+        if int(yy) in YY() and mo in MONTHS:
+            r = f"20{yy}-{MONTHS[mo]:02d}"
+            if r >= cur: return r
+    ys = set(re.findall(r'\b(20\d{2})\b', t))
+    if len(ys) == 1:  # « 2027 - March Start », « 2027 (January - June Start) », « January and July Intake » : mois de rentrée, avec la seule année du titre
+        y = next(iter(ys))
+        for m in re.finditer(r"\b(" + MONTH_RE + r")\b(?:\s*(?:-|–|/|and|et|or|ou|&)\s*(?:" + MONTH_RE + r")\b)?\s*(?:start|starts|starters?|intake|entry|cohort)\b", t):
+            r = f"{y}-{MONTHS[m.group(1)]:02d}"
+            if r >= cur: return r
+    for m in re.finditer(r"(?:^|[-–—|(/,:]\s*)(" + MONTH_RE + r")\.?\s*(?=[-–—|)/,]|$)", t):  # mois seul, isolé par des séparateurs
+        mo = m.group(1)
+        if mo not in BARE_OK or len(ys) > 1: continue
+        y = int(next(iter(ys))) if ys else _year_for(MONTHS[mo])
+        r = f"{y}-{MONTHS[mo]:02d}"
+        if r >= cur: return r
+    return None
 
 
 def title_range(title):
@@ -504,7 +584,7 @@ def months_with_title(title, text):
 def start_with_title(title, text):
     """Début écrit dans le titre, sinon dans le texte. Quand le texte écrit un mois avec une année déjà passée
     (« débutera en mars-avril 2026 ») alors que le titre annonce une seule année à venir (« Stage 2027 »), c'est le mois du texte avec l'année du titre."""
-    r = start_of(title) or title_range(title)[0] or start_of(text, loose=False)
+    r = start_of(title) or title_range(title)[0] or title_extra(title) or start_of(text, loose=False)
     if r: return r
     raw = _start_of(text or '', loose=False)
     ys = set(re.findall(r'\b(20\d{2})\b', title or ''))
@@ -530,8 +610,8 @@ def quarter_start(text):
 
 
 # « 1er semestre 2027 », « S2 2027 », « H1 2027 », « second half of 2027 » : début du semestre (année écrite obligatoire)
-SEM1 = re.compile(r"\b(?:s1|h1|1(?:er|st)\s+semest(?:re|er)|premier\s+semestre|first\s+(?:semester|half)|spring\s+semester)\s*(?:de\s+|of\s+|du\s+)?(20\d{2})\b", re.I)
-SEM2 = re.compile(r"\b(?:s2|h2|2(?:nd|e|ème|eme)\s+semest(?:re|er)|second\s+(?:semestre|semester|half)|fall\s+semester|autumn\s+semester)\s*(?:de\s+|of\s+|du\s+)?(20\d{2})\b", re.I)
+SEM1 = re.compile(r"\b(?:s1|h1|1(?:er|st)\s+semest(?:re|er)|premier\s+semestre|first\s+(?:semester|half)|spring\s+semester)\s*(?:de\s+|of\s+|du\s+|[/-]\s*)?(20\d{2})\b", re.I)
+SEM2 = re.compile(r"\b(?:s2|h2|2(?:nd|e|ème|eme)\s+semest(?:re|er)|second\s+(?:semestre|semester|half)|fall\s+semester|autumn\s+semester)\s*(?:de\s+|of\s+|du\s+|[/-]\s*)?(20\d{2})\b", re.I)
 
 
 SEASON_W = {'summer': '06', 'été': '06', 'ete': '06', 'sommer': '06', 'zomer': '06', 'fall': '09', 'autumn': '09', 'automne': '09', 'herbst': '09', 'najaar': '09',
@@ -556,12 +636,15 @@ def season_of(text, title=''):
         m = SEASON_YA.search(title)  # « Summer Internship Program 2027 »
         if m and not SEASON_SKIP.search(title[:m.start()]): return f"{m.group(2)}-{SEASON_W[m.group(1).lower()]}", m.group(0)
     t = text or ''
+    first = None
     for m in SEASON_RE.finditer(t):
         around = t[max(0, m.start() - 70):m.end() + 45]
-        if SEASON_SKIP.search(t[max(0, m.start() - 35):m.start()]) or not SEASON_CTX.search(around): continue
+        if SEASON_SKIP.search(t[max(0, m.start() - 35):m.start()]) or not (SEASON_CTX.search(around) or first): continue  # une liste de saisons garde le contexte de la première
         if WINDOW_CTX.search(t[max(0, m.start() - 35):m.start()]): continue
-        return f"{m.group(2)}-{SEASON_W[m.group(1).lower()]}", m.group(0)
-    return None, None
+        r = (f"{m.group(2)}-{SEASON_W[m.group(1).lower()]}", m.group(0))
+        if r[0] >= NOW.strftime('%Y-%m'): return r
+        first = first or r
+    return first or (None, None)
 
 
 def semester_start(text):
