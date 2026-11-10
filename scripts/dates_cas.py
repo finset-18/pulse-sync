@@ -46,7 +46,16 @@ OFFRE = [  # (intitulé, gardé comme stage ?)
     ('Early Careers', False), ('Early Careers Internship Programme', False), ('Early careers internship opportunities', False),
     ('Teller Part-Time (20 Hours) - Co-Op City Branch', False), ('Careers - Internships at Goldman Sachs', False),
 ]
+PAGE = [  # (texte du lien tel qu'il est écrit dans la page, intitulé attendu)
+    ('Stagiair Corporate Finance Amsterdam Read More', 'Stagiair Corporate Finance Amsterdam'),
+    ('Stage M&A - Paris En savoir plus →', 'Stage M&A - Paris'),
+    ('Praktikant (m/w/d) Mergers & Acquisitions Jetzt bewerben', 'Praktikant (m/w/d) Mergers & Acquisitions'),
+]
 bad = 0
+for t, want in PAGE:
+    h = f'<a href="/careers/jobs/offre-1/">{t}</a>'
+    got = [x['title'] for x in c.page_jobs({'id': 'x', 'name': 'X', 'url': 'https://x.example'}, h, 'https://x.example/careers/')]
+    if got != [want]: bad += 1; print(f'PAGE   attendu {[want]}, obtenu {got}')
 for t, x, want in DEBUT:
     if want and want < CUR: continue
     got = c.start_with_title(t, x)
@@ -54,5 +63,5 @@ for t, x, want in DEBUT:
 for t, want in OFFRE:
     got = c.keep_offer({'title': t, 'url': 'x'})
     if got != want: bad += 1; print(f'FILTRE attendu {want}, obtenu {got} : {t}')
-print(f'{len(DEBUT) + len(OFFRE)} cas, {bad} en échec')
+print(f'{len(DEBUT) + len(OFFRE) + len(PAGE)} cas, {bad} en échec')
 sys.exit(1 if bad else 0)

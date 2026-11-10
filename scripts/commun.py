@@ -85,7 +85,7 @@ def official_site(c):
 # ---------------------------------------------------------------- filtres
 INTERN = re.compile(r"(\bintern\b|\binterns\b|internship|\bstage\b|\bstages\b|stagiaire|off[\s-]?cycle|summer (?:analyst|associate|intern|internship|programme|program)|"
                     r"praktik|werkstudent|\btrainee\b|apprenti|alternan|volontariat international|graduate|spring (?:week|insight)|"
-                    r"insight (?:week|programme|program)|industrial placement|placement year|stagiair|tirocinio|pr[aá]cticas|becario|working student|"
+                    r"insight (?:week|programme|program)|industrial placement|placement year|stagiair|afstudeerstage|meeloopstage|tirocinio|pr[aá]cticas|becario|working student|"
                     r"placement analyst|placement (?:student|programme|program|scheme)|\b(?:6|9|12|13)[- ]month placement|year[- ]long placement|co-?op (?:analyst|associate|intern|student|program(?:me)?|position)|\(co-?op\)|student worker|student job|job [ée]tudiant|c[ée]sure|gap[- ]year|fin d['’]\s*[ée]tudes|\bpfe\b|contrat de professionnalisation|contrat pro\b)", re.I)
 INTERN_COMMIT = re.compile(r"intern|stage|stagiaire|apprenti|alternan|trainee|praktik|werkstudent|working student|\bvie\b|graduate", re.I)
 EXCLUDE = re.compile(r"(senior|director|directeur|head of|vice president|\bvp\b|managing|manager(?! intern)|principal\b|partner\b|lead\b|chief|expert confirm)", re.I)
@@ -1118,6 +1118,12 @@ def jsonld_jobs(htmltext, base):
     return out
 
 
+# bouton rangé dans le même lien que l'intitulé (« Stagiair Corporate Finance Amsterdam Read More ») : retiré, sinon l'offre passait pour un élément de navigation
+CTA_TAIL = re.compile(r"(?:\s*[-–|·:>»→›]*\s*(?:read more|learn more|more info(?:rmation)?|find out more|view (?:job|role|details|vacancy|position)|apply(?: now| here)?|"
+                      r"lire la suite|en savoir plus|voir l['’]offre|postuler|d[ée]couvrir(?: l['’]offre)?|meer lezen|lees meer|bekijk(?: de)? vacature|solliciteer(?: direct| nu)?|"
+                      r"mehr erfahren|mehr lesen|weiterlesen|jetzt bewerben|zur stelle|leer m[áa]s|ver oferta|scopri di pi[ùu]|leggi di pi[ùu]|candidati)\s*[>»→›]*\s*)+$", re.I)
+
+
 def page_jobs(c, htmltext, base, hosts=()):
     """Liens d'offres de stage trouvés dans une page (HTML statique ou rendu par le navigateur)."""
     out, seen = jsonld_jobs(htmltext, base), set()
@@ -1125,6 +1131,7 @@ def page_jobs(c, htmltext, base, hosts=()):
     own_hosts = {h for h in own_hosts if h}
     for href, txt in A_RE.findall(htmltext or ''):
         t = clean(txt)
+        t = CTA_TAIL.sub('', t).strip() or t
         if not (6 <= len(t) <= 180): continue
         u = urljoin(base, html.unescape(href.strip()))
         if not u.startswith('http') or u in seen: continue
