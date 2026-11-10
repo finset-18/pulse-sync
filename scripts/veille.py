@@ -231,7 +231,8 @@ def dates_stats(out):
     pct = lambda k: round(100 * k / n, 1)
     return {'open': len(op), 'complete': len(comp), 'complete_pct': pct(len(comp)), 'complete_written': len(written), 'complete_written_pct': pct(len(written)),
             'traitees': len(trait), 'traitees_pct': pct(len(trait)), 'start_pct': pct(sum(1 for o in op if has_s(o))), 'months_pct': pct(sum(1 for o in op if o.get('months'))),
-            'non_precise': sum(1 for o in op if lu(o) and not (has_s(o) and o.get('months')))}
+            'non_precise': sum(1 for o in op if lu(o) and not (has_s(o) and o.get('months'))),
+            'estimes': dict(sys.modules['estime'].LAST) if 'estime' in sys.modules else {}}
 
 
 def dates_finish(offers):
@@ -246,6 +247,12 @@ def dates_finish(offers):
         for k, ok in (('start_na', o.get('start') or o.get('start_asap')), ('months_na', o.get('months'))):
             if not ok and lu: o[k] = 1
             else: o.pop(k, None)
+    # estimations (champs à part, jamais comptées comme écrites) : voir estime.py ; une panne ici ne doit rien bloquer
+    try:
+        import estime
+        estime.estimer(list(offers.values()), NOW.strftime('%Y-%m'))
+    except Exception as e:
+        print(f'estimations ignorées : {str(e)[:120]}', flush=True)
 
 
 def m_key(m):
