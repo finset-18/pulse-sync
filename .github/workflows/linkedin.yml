@@ -1,0 +1,61 @@
+name: linkedin
+
+# LinkedIn en profondeur : stages publiés depuis une semaine, par métier et par pays, liste seule (scripts/linkedin.py).
+# Trois lots en parallèle, un serveur chacun. Chaque lot écrit data/lent_li_<lot>.json dans le dépôt de données ;
+# le job sync le reprend à son passage suivant (veille.consume_extra). Il ne touche pas aux offres lui-même :
+# s'il tombe en panne ou si LinkedIn le limite, rien d'autre n'est affecté. Le journal ne montre que des comptes.
+on:
+  schedule:
+    - cron: "9,39 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    concurrency:
+      group: linkedin-${{ matrix.shard }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        env:
+          R: ${{ secrets.DATA_REPO }}
+          T: ${{ secrets.DATA_TOKEN }}
+        run: '[ -n "$R" ] && [ -n "$T" ] || { echo "missing DATA_REPO / DATA_TOKEN secrets"; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.DATA_TOKEN }}
+          path: store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests==2.32.3
+      - name: linkedin
+        env:
+          DATA_DIR: ${{ github.workspace }}/store/data
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "3"
+        run: |
+          python scripts/linkedin.py > run.log 2>&1 || { tail -n 8 run.log | cut -c1-300; exit 1; }
+          grep -E '^linkedin lot' run.log | cut -c1-400
+      - name: save
+        working-directory: store
+        run: |
+          f="data/lent_li_${{ matrix.shard }}.json"
+          [ -f "$f" ] || exit 0
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git add "$f"
+          git diff --cached --quiet && exit 0
+          git commit -q -m "linkedin ${{ matrix.shard }} $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4 5 6; do git pull -q --rebase --autostash -X theirs && git push -q && exit 0; sleep $((i * 7)); done
+          exit 1

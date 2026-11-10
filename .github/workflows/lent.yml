@@ -4,7 +4,7 @@ name: lent
 # Il ne touche pas aux offres : il écrit data/lent.json, que le job sync reprend à son passage suivant.
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "17,47 * * * *"   # deux fois par heure : le tour complet des agrégateurs (670 recherches, 120 par passage) passe de 6 h à 3 h
   workflow_dispatch:
 
 permissions:
