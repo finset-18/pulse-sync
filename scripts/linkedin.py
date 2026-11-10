@@ -17,7 +17,7 @@ Usage : SHARD=0 SHARDS=6 python scripts/linkedin.py        (essai sans écrire :
 import html as _html, json, os, random, re, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests
-from commun import load, save, NOW_ISO, UA, clean
+from commun import load, save, NOW_ISO, UA, clean, iso
 
 SHARD, SHARDS = int(os.environ.get('SHARD', '0')), max(1, int(os.environ.get('SHARDS', '1')))
 MAX_Q = int(os.environ.get('LI_MAX_Q', '40'))          # recherches par passage et par lot
@@ -48,7 +48,7 @@ def cards(htmltext):
         jid = re.search(r'-(\d{6,})$', url) or re.search(r'/(\d{6,})$', url)
         p, lg = F['posted'].search(c), F['logo'].search(c)
         out.append({'title': t, 'company': _txt(F['company'].search(c)), 'location': _txt(F['location'].search(c))[:120],
-                    'url': 'https://www.linkedin.com/jobs/view/' + jid.group(1) if jid else url, 'posted': p.group(1) if p else None,
+                    'url': 'https://www.linkedin.com/jobs/view/' + jid.group(1) if jid else url, 'posted': iso(p.group(1)) if p else None,
                     'logo': _html.unescape(lg.group(1)) if lg else '', 'ext': 'linkedin:' + (jid.group(1) if jid else url), 'desc': '', 'commit': 'internship', 'src': 'linkedin'})
     return out
 

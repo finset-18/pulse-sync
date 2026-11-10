@@ -437,6 +437,8 @@ def consume_extra(state, results, structs, byid):
                    if cid in ids and isinstance(v, list) and len(v) == 2 and isinstance(v[0], list) and isinstance(v[1], dict)}
             for i in agg.values():
                 i[1].setdefault('ran', []); i[1].setdefault('ok', False); i[1].setdefault('via', ''); i[1].setdefault('err', ''); i[1].setdefault('complete', False)
+                for row in i[0]:  # date de publication toujours au format du robot (avec fuseau) : une date nue faisait planter le calcul des délais
+                    if isinstance(row, dict): row['posted'] = iso(row.get('posted'))
             for p in pseudo:
                 if p['id'] not in byid:
                     structs.append(p); byid[p['id']] = p
