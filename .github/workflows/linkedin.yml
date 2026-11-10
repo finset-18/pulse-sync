@@ -1,7 +1,8 @@
 name: linkedin
 
 # LinkedIn en profondeur : stages publiés depuis une semaine, par métier et par pays, liste seule (scripts/linkedin.py).
-# Trois lots en parallèle, un serveur chacun. Chaque lot écrit data/lent_li_<lot>.json dans le dépôt de données ;
+# Huit lots en parallèle, un serveur chacun : LinkedIn limite chaque serveur après 7 à 19 requêtes (mesuré le 10 novembre 2026),
+# donc on avance plus vite avec plus de serveurs qu'avec plus de requêtes par serveur. Chaque lot écrit data/lent_li_<lot>.json dans le dépôt de données ;
 # le job sync le reprend à son passage suivant (veille.consume_extra). Il ne touche pas aux offres lui-même :
 # s'il tombe en panne ou si LinkedIn le limite, rien d'autre n'est affecté. Le journal ne montre que des comptes.
 on:
@@ -19,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     concurrency:
       group: linkedin-${{ matrix.shard }}
       cancel-in-progress: false
@@ -43,7 +44,7 @@ jobs:
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           SHARD: ${{ matrix.shard }}
-          SHARDS: "3"
+          SHARDS: "8"
         run: |
           python scripts/linkedin.py > run.log 2>&1 || { tail -n 8 run.log | cut -c1-300; exit 1; }
           grep -E '^linkedin lot' run.log | cut -c1-400
