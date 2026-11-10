@@ -419,6 +419,34 @@ def consume_lent(state, results, structs, byid):
     return doc['updated']
 
 
+def consume_extra(state, results, structs, byid):
+    """Reprend les fichiers data/lent_*.json écrits par d'autres jobs (LinkedIn en profondeur…), au même format que lent.json
+    mais limités aux annonces (structs, results). Chaque fichier n'est repris que s'il est nouveau. Renvoie le nombre de fichiers repris."""
+    import glob
+    seen = state.setdefault('lent_seen_x', {})
+    n = 0
+    for path in sorted(glob.glob(os.path.join(DATA, 'lent_*.json'))):
+        name = os.path.basename(path)
+        try:
+            doc = load(name)
+            if not isinstance(doc, dict) or not doc.get('updated') or doc['updated'] == seen.get(name): continue
+            if hours_since(doc['updated']) > 24 * 6: continue  # job arrêté depuis longtemps : ses annonces ne sont plus présentées comme vues
+            pseudo = [p for p in doc.get('structs') or [] if isinstance(p, dict) and p.get('id') and p.get('name')]
+            ids = set(byid) | {p['id'] for p in pseudo}
+            agg = {cid: (v[0], v[1]) for cid, v in (doc.get('results') or {}).items()
+                   if cid in ids and isinstance(v, list) and len(v) == 2 and isinstance(v[0], list) and isinstance(v[1], dict)}
+            for i in agg.values():
+                i[1].setdefault('ran', []); i[1].setdefault('ok', False); i[1].setdefault('via', ''); i[1].setdefault('err', ''); i[1].setdefault('complete', False)
+            for p in pseudo:
+                if p['id'] not in byid:
+                    structs.append(p); byid[p['id']] = p
+            merge_results(results, agg)
+            seen[name] = doc['updated']; n += 1
+        except Exception as e:  # un fichier abîmé n'arrête pas le passage
+            print(f'{name} ignoré : {str(e)[:100]}', flush=True)
+    return n
+
+
 def hours_since(ts):
     try: return (NOW - dt.datetime.fromisoformat(str(ts).replace('Z', '+00:00'))).total_seconds() / 3600
     except Exception: return 1e9
@@ -738,6 +766,7 @@ def main():
     lent_new = None
     try:
         lent_new = consume_lent(state, results, structs, byid)
+        consume_extra(state, results, structs, byid)
         if lent_new: print('passage lent repris :', lent_new, flush=True)
     except Exception as e:
         err('reprise du passage lent', e)
