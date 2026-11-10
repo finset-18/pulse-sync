@@ -5,6 +5,10 @@ Sources (gratuites, sans clé) :
   1. BODACC (annonces-commerciales, OpenDataSoft) : avis de création, filtrés par
      expressions exactes dans l'objet social, puis reclassés localement par regex.
   2. AMF GECO (liste des SGP, CSV data.gouv) : SGP agréées depuis < 12 mois (+ site web).
+  2 bis. BODACC, sociétés de libre partenariat (SLP) : chaque nouveau fonds lancé sous cette forme y est publié avec
+     son gérant. Une ligne par gérant (son fonds le plus récent, le nombre de fonds lancés en 12 mois) : une équipe
+     qui lève un fonds recrute. Les véhicules d'une seule opération (SPV, co-investissement) ne servent de titre
+     que si le gérant n'a rien d'autre.
   3. API Recherche d'entreprises : enrichissement par SIREN (date de création, NAF,
      ville, état administratif). Pas de filtre par date côté API -> pas utilisée
      comme source primaire.
@@ -34,6 +38,7 @@ PHRASES = [
     "gestion de portefeuille pour le compte de tiers", "gestion collective",
     "gestion de fortune", "conseil en investissements financiers", "levée de fonds",
     "cession et transmission d'entreprises",
+    "fonds d'investissement alternatif", "portefeuilles collectifs",
 ]
 
 # Reclassement local (ordre = priorité)
@@ -44,7 +49,8 @@ RX = [
             r"lev[ée]es? de fonds"),
     ("VC", r"capital[\s-]risque|venture[\s-]capital|\bventures?\b"),
     ("PE", r"private[\s-]equity|capital[\s-]investissement|\blbo\b"),
-    ("Gestion", r"gestion (de portefeuilles? )?pour (le )?compte de tiers|gestion collective|"
+    ("Gestion", r"gestion de fonds d'investissement alternatifs?|gestion de portefeuilles collectifs|portefeuilles collectifs d'instruments financiers|"
+                r"gestion (de portefeuilles? )?pour (le )?compte de tiers|gestion collective|"
                 r"gestion de fortune|asset management|gestion d'actifs|"
                 r"conseil en investissements? financiers?"),
 ]
@@ -115,7 +121,7 @@ def parse_bodacc(x):
     return dict(nom=nom, siren=siren, type=pers.get("typePersonne"), activite=act,
                 ville=x.get("ville"), date_immat=acte.get("dateImmatriculation") or x["dateparution"],
                 cat_creation=(acte.get("creation") or {}).get("categorieCreation", ""),
-                url=x.get("url_complete"), nomcom=pers.get("nomCommercial") or "")
+                url=x.get("url_complete"), nomcom=pers.get("nomCommercial") or "", forme=pers.get("formeJuridique") or "")
 
 
 def classify(nom, act):
@@ -130,6 +136,7 @@ def keep_bodacc(p):
     """Renvoie (categorie, raison_rejet)."""
     if p["type"] == "pp": return None, "personne physique"
     if "transfert" in p["cat_creation"].lower(): return None, "transfert de siège"
+    if "libre partenariat" in p.get("forme", "").lower(): return None, "véhicule de fonds (compté avec les nouveaux fonds)"
     cat, hit = classify(p["nom"], p["activite"])
     if not cat: return None, "aucun mot-clé fort"
     a = p["activite"].lower()
@@ -150,6 +157,76 @@ def keep_bodacc(p):
         if re.search(r"courtage|courtier|assurance|immobilier", a) and cat == "Gestion":
             cat = "Gestion"  # CGP : on garde mais on le signale
     return cat, None
+
+
+# ---------------------------------------------------------------- Nouveaux fonds (SLP publiées au BODACC)
+SLP_SPV = re.compile(r"\bspv\b|co-?invest|aggregator|reinvest|feeder|parallel|continuation|club deal|\bholdco\b", re.I)
+# (stratégie affichée, catégorie du site, mots du nom du fonds ou de son objet)
+STRAT = [("Capital-risque", "VC", r"venture|capital[\s-]risque|\bseed\b|amor[cç]age|innovation|early[\s-]stage|start-?up|deeptech|biotech|\btech\b|\bgrowth\b|\bvc\b"),
+         ("Immobilier", "Gestion", r"immo|real estate|h[oô]tel|foncier|logement|r[ée]sidenc|property"),
+         ("Infrastructure", "PE", r"infra|[ée]nerg|renewable|renouvelable"),
+         ("Dette privée", "PE", r"\bdette\b|\bdebt\b|credit|cr[ée]dit|lending|mezzanine"),
+         ("Secondaire", "PE", r"secondar|secondaire|vintage")]
+LEGAL_PREFIX = re.compile(r"^(?:st[ée]|soci[ée]t[ée])\s+(?:par actions simplifi[ée]e|anonyme|[àa] responsabilit[ée] limit[ée]e|en commandite(?: simple| par actions)?|civile)"
+                          r"(?:\s+(?:unipersonnelle|[àa] associ[ée] unique))?\s+", re.I)
+GERANT = re.compile(r"(?:soci[ée]t[ée] de gestion|g[ée]rante?)(?: non associ[ée]e?)?\s*:\s*(.+?)(?=\s*[,.;]\s*(?:associ|commissaire|g[ée]rant|pr[ée]sident|soci[ée]t[ée] de gestion|d[ée]positaire|directeur)|\s*$)", re.I | re.S)
+
+
+def slp(since):
+    where = f'familleavis="creation" AND dateparution>="{since}" AND listepersonnes like "%libre partenariat%"'
+    sel = "id,dateparution,commercant,ville,registre,listepersonnes,listeetablissements,acte,url_complete"
+    out, off = [], 0
+    while True:
+        r = get(BODACC, {"where": where, "select": sel, "limit": 100, "offset": off, "order_by": "dateparution desc"}).json()
+        res = r.get("results", []); out += res; off += 100
+        if not res or off >= min(r.get("total_count", 0), 9900): break
+        time.sleep(0.25)
+    return out
+
+
+def gerant_of(admin):
+    m = GERANT.search(admin or "")
+    if not m: return ""
+    g = LEGAL_PREFIX.sub("", m.group(1).strip())
+    g = re.sub(r"\s+(?:sas|sasu|sa|sarl|sca|s\.?\s?[àa]\.?\s?r\.?\s?l\.?)\.?$", "", g, flags=re.I).strip(" .,;/")
+    g = re.sub(r"\s+(?:s\.?l\.?p\.?s?\s+)?(?:lux\s+)?(?:general partner|gp)(?:\s+\d+)?$", "", g, flags=re.I).strip(" .,;/")  # « Eiffel General Partner 10 » -> « Eiffel »
+    return g
+
+
+def strat_of(nom, act, gerant=""):
+    t = (nom + " | " + gerant).lower()
+    for lab, cat, rx in STRAT:
+        if re.search(rx, t): return lab, cat
+    return "Capital-investissement", "PE"
+
+
+def fonds(raw):
+    """Une ligne par gérant : son fonds le plus récent (hors véhicule d'une seule opération quand c'est possible)."""
+    by = {}
+    for x in raw:
+        try: pers = json.loads(x["listepersonnes"] or "{}").get("personne", {})
+        except Exception: continue
+        if isinstance(pers, list): pers = pers[0] if pers else {}
+        if "libre partenariat" not in (pers.get("formeJuridique") or "").lower(): continue
+        p = parse_bodacc(x)
+        g = gerant_of(pers.get("administration"))
+        if not g or not p["nom"]: continue
+        by.setdefault(norm(g) or g.lower(), []).append(dict(p, gerant=g))
+    out = []
+    for k, fs in by.items():
+        fs.sort(key=lambda f: f["date_immat"] or "", reverse=True)
+        main = next((f for f in fs if not SLP_SPV.search(f["nom"])), fs[0])
+        lab, cat = strat_of(main["nom"], main["activite"], main["gerant"])
+        if SLP_SPV.search(main["nom"]): lab = "Co-investissement"
+        seen, autres = set(), []
+        for f in fs:
+            n_ = norm(f["nom"])
+            if n_ in seen: continue
+            seen.add(n_); autres.append({"nom": f["nom"], "date": (f["date_immat"] or "")[:10]})
+        out.append(dict(key="slp:" + k, nom=main["nom"], gerant=main["gerant"], siren=main["siren"], date_creation=(main["date_immat"] or "")[:10],
+                        ville=main["ville"], categorie=cat, strategie=lab, type="fonds", source="BODACC (nouveau fonds)", site=None,
+                        bodacc_url=main["url"], fonds_n=len(autres), fonds=autres[:8]))
+    return out
 
 
 # ---------------------------------------------------------------- GECO
@@ -232,6 +309,14 @@ def main():
                          categorie=cat, source="BODACC", site=None, activite=p["activite"][:300],
                          bodacc_url=p["url"])
 
+    try:
+        fraw = slp(since)
+        fl = fonds(fraw)
+        print(f"SLP : {len(fraw)} fonds publiés, {len(fl)} gérants", file=sys.stderr)
+        for f in fl: rows[f.pop("key")] = f
+    except Exception as e:  # source en panne : le reste de la liste est écrit quand même
+        print("SLP illisibles :", str(e)[:120], file=sys.stderr)
+
     g = geco(a.geco, since)
     print(f"GECO : {len(g)} SGP agréées depuis {since}", file=sys.stderr)
     for s in g:
@@ -262,8 +347,9 @@ def main():
         if r.get("etat") == "NAF_HORS_PERIMETRE":
             rejects["NAF hors périmètre"] = rejects.get("NAF hors périmètre", 0) + 1; continue
         if r["source"] == "BODACC" and (r["date_creation"] or "") < since: continue
-        r["linkedin_search"], r["google_search"] = links(r["nom"], r["ville"])
-        r["connue"] = bool(is_known(r["nom"]))
+        who = r.get("gerant") or r["nom"]  # un fonds : c'est son gérant qu'on cherche et qu'on contacte
+        r["linkedin_search"], r["google_search"] = links(who, r["ville"])
+        r["connue"] = bool(is_known(who))
         r.pop("activite", None)
         out.append(r)
     out.sort(key=lambda r: r.get("date_agrement") or r["date_creation"] or "", reverse=True)
