@@ -234,6 +234,11 @@ def run_aggregators(structs, recettes, run_no, log=print):
         except Exception as e:
             log('agr+ : ' + str(e)[:120])
 
+    return attach(rows, structs, recettes)
+
+
+def attach(rows, structs, recettes):
+    """Rattache des annonces d'agrégateur aux structures de la liste ou à des sociétés hors liste (mêmes filtres pour tous les agrégateurs)."""
     idx = name_index(structs)
     fast = {cid for cid, r in recettes.items() if any(m.get('m') in FAST for m in (r.get('methods') or []))}
     # structures dont la plateforme donne vraiment des offres : les annonces d'agrégateurs seraient des doublons.
