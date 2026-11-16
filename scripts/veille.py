@@ -94,8 +94,17 @@ def title_ok(c, x):
     if x.get('trust'): return not hors_finance(t)
     g = group_kind(c)
     if g == 'strict': return cvc_ok(t)
-    if g == 'light': return not hors_finance(t)
+    if g == 'light': return not hors_finance(t) or sector_team(c, t)
     return True
+
+
+# Banque d'affaires ou fonds : « Communications », « Software », « Digital »… dans un intitulé d'analyste est le nom d'une équipe
+# sectorielle (« Graduate Analyst, Communications & Digital Infrastructure Team, Paris » chez Evercore), pas un métier hors finance.
+ADVISORY_FAMS = ('eb', 'pesmall', 'pemid', 'pelarge', 'vc')
+
+
+def sector_team(c, t):
+    return (c or {}).get('fam') in ADVISORY_FAMS and bool(re.search(r"\banaly(?:st|ste)s?\b|\bassociates?\b", t, re.I)) and not NOT_FIN_ANALYST.search(t)
 # fermeture d'une offre : absente MISS_CLOSE passages de suite ET pas revue depuis 36 h
 # (avant : 2 absences = fermée en 4 h, ce qui fermait à tort les offres des pages qui changent d'ordre
 # ou des plateformes qui coupent la lecture en route)
@@ -509,6 +518,22 @@ def dup_key(o):
     return (company_key(o), o.get('contract') or '', _norm(t) or _norm(o.get('title')), o.get('country') or '')
 
 
+# premiers mots trop communs pour désigner une enseigne (« Banque Populaire » et « Banque Palatine » ne sont pas la même maison)
+BRAND_GENERIC = {'banque', 'bank', 'banca', 'banco', 'credit', 'societe', 'caisse', 'compagnie', 'cabinet', 'fonds', 'first', 'national', 'royal', 'union',
+                 'saint', 'american', 'united', 'general', 'deutsche', 'grand', 'grande', 'nord', 'north', 'south', 'east', 'west', 'global', 'euro',
+                 'europe', 'european', 'france', 'french', 'paris', 'london', 'swiss', 'city', 'blue', 'black', 'white', 'green', 'gold', 'silver'}
+
+
+def brand_key(o):
+    """Même enseigne sous plusieurs noms (« Natixis », « Natixis CIB », « Natixis Corporate & Investment Banking ») : premier mot
+    distinctif du nom + contrat + intitulé complet + pays. Réservé aux intitulés d'au moins trois mots, pour ne jamais regrouper
+    deux « Stagiaire M&A » de filiales différentes sur un intitulé trop court."""
+    words = [_norm(w) for w in re.split(r"[\s&()/,.'’-]+", LEGAL.sub(' ', o.get('company') or '')) if _norm(w)]
+    k = dup_key(o)
+    if not words or len(words[0]) < 4 or words[0] in STOP_TOK or words[0] in BRAND_GENERIC or len(re.findall(r"[a-z0-9]{2,}", tnorm(o.get('title')))) < 3: return None
+    return (words[0],) + k[1:]
+
+
 def split_terms(g):
     """Sépare les offres dont la durée ou le début, connus des deux côtés, diffèrent."""
     out = []
@@ -531,6 +556,13 @@ def group_dups(offers, new_ids=()):
             o.pop('dup_of', None); o.pop('cities', None)
             continue
         groups.setdefault(dup_key(o), []).append(o)
+    # même enseigne sous des noms différents selon la source : groupes réunis quand tout le reste de la clé est identique
+    brands = {}
+    for k in list(groups):
+        bk = brand_key(groups[k][0])
+        if bk is None: continue
+        if bk in brands and brands[bk] != k: groups[brands[bk]] += groups.pop(k)
+        else: brands[bk] = k
     n = 0
     for g in [b for g0 in groups.values() for b in split_terms(g0)]:
         ids = {o['id'] for o in g}
