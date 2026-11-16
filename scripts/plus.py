@@ -30,7 +30,8 @@ TRACKR = [(r, 'Finance', s, t) for s in ('2027', '2028') for r, t in (
     ('UK', 'summer-internships'), ('UK', 'off-cycle-internships'), ('UK', 'spring-weeks'), ('UK', 'industrial-placements'),
     ('US', 'summer-internships'), ('US', 'off-cycle-internships'), ('US', 'spring-weeks'))]
 CITY = re.compile(r"\b(paris|london|londres|frankfurt|francfort|munich|luxembourg|zurich|zürich|geneva|gen[èe]ve|brussels|bruxelles|amsterdam|dublin|madrid|milan|"
-                  r"new york|hong kong|singapore|singapour|dubai|edinburgh|manchester|birmingham|glasgow|leeds|bristol)\b", re.I)
+                  r"new york|hong kong|singapore|singapour|dubai|edinburgh|manchester|birmingham|glasgow|leeds|bristol|stockholm|copenhagen|oslo|helsinki|vienna|lisbon|rome|warsaw|"
+                  r"chicago|houston|boston|san francisco|los angeles|toronto|tokyo|sydney)\b", re.I)
 EFC = 'https://job-search-api.efinancialcareers.com/v1/efc/jobs/search'
 EFC_C = ('FR', 'GB', 'LU', 'CH', 'BE', 'DE', 'NL', 'IE', 'ES', 'IT', 'US', 'HK', 'SG', 'AE')
 EFC_Q = ('intern', 'stage', 'off-cycle', 'summer analyst', 'graduate')
@@ -183,22 +184,64 @@ def tal_parse(html, base):
             continue
         seen.add(oid)
         cells = [clean(re.sub(r'<[^>]+>', ' ', c)) for c in re.findall(r'<td\b[^>]*>(.*?)</td>', tail, re.I | re.S)]
-        res.append((oid, title, next((c for c in cells if c), ''), href.replace('&amp;', '&')))
+        loc = next((c for c in cells if c), '')
+        if not cells:  # affichage en tuiles (Rothschild & Co) : pas de colonnes, la date limite est dans un bloc « Application Deadline: 30 Nov 2026 »
+            m2 = re.search(r'(?:deadline|closing date|date limite)[^0-9<]{0,40}(\d{1,2}\s+[A-Za-z]{3,9}\.?\s+20\d{2})', re.sub(r'<[^>]+>', ' ', tail), re.I)
+            loc = clean(m2.group(1)) if m2 else ''
+        res.append((oid, title, loc, href.replace('&amp;', '&')))
     pages = {int(s): h.replace('&amp;', '&') for h, s in TAL_NEXT.findall(html)}
     return res, pages
 
 
+TAL_MONTHS = {m: i + 1 for i, m in enumerate(('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'))}
+
+
+def tal_date(s):
+    """« 29 Nov 2026 » -> « 2026-11-29 » ; '' si ce n'est pas une date."""
+    m = re.match(r'\s*(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?\s+(20\d{2})\s*$', s or '')
+    if not m or m.group(2).lower() not in TAL_MONTHS or not 1 <= int(m.group(1)) <= 31:
+        return ''
+    return f'{m.group(3)}-{TAL_MONTHS[m.group(2).lower()]:02d}-{int(m.group(1)):02d}'
+
+
+TAL_SKIP = re.compile(r"^\s*(?:events?\b|experienced|lateral|professionals?\b|alumni)", re.I)  # tableaux d'événements ou de postes confirmés
+TAL_STUDENT = re.compile(r"student|campus|graduate|early|intern|[ée]tudiant|stage|school|universit", re.I)
+
+
 def tal_board(client, board, company, trust=True):
+    """Un tableau d'offres tal.net. Le titre de la page dit ce qu'il contient : « Events » et « Experienced Hires » sont sautés,
+    et sur un tableau étudiant (« Students and Graduates », « Campus Opportunities ») chaque ligne est un stage ou un programme
+    junior, même si son intitulé ne contient pas le mot (« Analyst, Industrials – Paris (January 2027) »)."""
     from urllib.parse import urljoin
-    url, out, done = f'https://{client}.tal.net/candidate/jobboard/vacancy/{board}/adv/', [], set()
-    for _ in range(40):
+    url, out, done, commit = f'https://{client}.tal.net/candidate/jobboard/vacancy/{board}/adv/', [], set(), ''
+    for page in range(40):
         r = S.get(url, timeout=T)
         r.raise_for_status()
+        if page == 0:
+            m = re.search(r'<title[^>]*>(.*?)</title>', r.text, re.I | re.S)
+            head = clean(re.sub(r'<[^>]+>', ' ', m.group(1))) if m else ''
+            if TAL_SKIP.search(head):
+                return []
+            if TAL_STUDENT.search(head.split(' - ')[0]):
+                commit = INTERN
+            if not trust and ' - ' in head:
+                # compte récolté : le nom vient d'un lien croisé et peut être celui d'une filiale (rothschildandco.tal.net rangé
+                # sous « Redburn », lazard-careers sous « Lazard Asset Management ») ; le titre de la page donne la maison
+                own = clean(re.sub(r"\b(?:careers?|campus|recruitment|recruiting|jobs)\b", ' ', head.rsplit(' - ', 1)[1], flags=re.I))
+                if len(own) >= 3 and not re.search(r'candidate|system|tal\.net|oleeo', own, re.I):
+                    company = own
         got, pages = tal_parse(r.text, r.url)
         for oid, title, loc, href in got:
             if oid not in done:
                 done.add(oid)
-                out.append(row('talnet', company, title, urljoin(r.url, href).split('?')[0], loc, None, client + ':' + oid, commit='', trust=trust))
+                dl = tal_date(loc)  # colonne « Application Deadline » (Evercore…) : une date limite, pas un lieu
+                if dl or re.match(r'\d', loc):
+                    m = CITY.search(title)
+                    loc = m.group(1).title() if m else ''
+                x = row('talnet', company, title, urljoin(r.url, href).split('?')[0], loc, None, client + ':' + oid, commit=commit, trust=trust)
+                if dl:
+                    x['deadline'] = dl
+                out.append(x)
         nxt = sorted(s for s in pages if s > (len(done) - len(got)))
         if not got or not nxt:
             break
@@ -207,17 +250,23 @@ def tal_board(client, board, company, trust=True):
 
 
 def s_talnet():
-    """Comptes tal.net connus, plus ceux récoltés chaque semaine par comptes.py. Un compte protégé renvoie 0 offre."""
-    boards = list(TAL)
-    for client, name in ((load('comptes.json') or {}).get('tal') or {}).items():
-        if not any(b[0] == client for b in TAL):
-            boards += [(client, n, name) for n in (1, 2)]
+    """Comptes tal.net connus, plus ceux récoltés chaque semaine par comptes.py. Un compte protégé renvoie 0 offre.
+    Comptes récoltés : tableaux 1 à 5 (le tableau étudiant n'a pas toujours le numéro 1 ou 2), arrêt au premier numéro inexistant."""
     out = []
-    for client, board, company in boards:
+    for client, board, company in TAL:
         try:
-            out += tal_board(client, board, company, any(b[0] == client for b in TAL))  # comptes récoltés : intitulé financier exigé
+            out += tal_board(client, board, company, True)
         except Exception:
             pass
+    for client, name in ((load('comptes.json') or {}).get('tal') or {}).items():
+        if any(b[0] == client for b in TAL):
+            continue
+        for n in (1, 2, 3, 4, 5):
+            try:
+                out += tal_board(client, n, name, False)  # intitulé financier exigé, sauf maison de finance de la liste
+            except Exception:
+                if n > 2:
+                    break
     return out
 
 

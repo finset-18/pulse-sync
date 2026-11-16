@@ -18,12 +18,24 @@ FAST = ('ats', 'api', 'html', 'wttj')
 # intitulé de poste financier (plus strict que FIN_TITLE, qui accepte « marketing ») : exigé hors liste
 HL_TITLE = re.compile(r"financ|m&a|merger|fusion|acquisition|private equity|capital[- ]invest|venture|\blbo\b|invest|asset|wealth|patrimoin|"
                       r"\bfunds?\b|fonds|banking|banque|corporate finance|transaction|valuation|[ée]valuation|credit|cr[ée]dit|equity|debt|dette|"
-                      r"trading|trader|markets\b|march[ée]s financiers|quant|treasury|tr[ée]sorerie|actuar|\brisk|risque", re.I)
+                      r"trading|trader|markets\b|march[ée]s financiers|quant|treasury|tr[ée]sorerie|actuar|\brisk|risque|"
+                      r"fixed income|restructur|leverag|securiti[sz]|titrisation|derivativ|d[ée]riv[ée]s", re.I)
 LEGAL = re.compile(r"\b(sas|sasu|sa|sarl|sca|snc|ltd|limited|llp|plc|gmbh|ag|inc|llc|lp|nv|bv|se|s\.a\.?|group|groupe|holding|france|uk|europe|international)\b\.?", re.I)
 
 
 def is_hl(cid):
     return str(cid).startswith('h_')
+
+
+# Maison de finance de la liste (banque d'affaires, fonds, gestion, TS…) : tous ses stages nous intéressent, même quand
+# l'intitulé ne contient aucun mot financier (« Paris Off-Cycle Internship – Generalist Team », « Summer Internship 2027 »).
+# Avant, une annonce d'agrégateur ou d'un compte tal.net récolté sans mot financier était écartée : Evercore Paris, Stockholm,
+# Milan et Francfort n'apparaissaient pas. Les postes hors finance des grands groupes restent écartés ensuite par title_ok.
+NOT_FIN_HOUSE = ('corp', 'consulting', 'fintech', '', None)
+
+
+def fin_house(c):
+    return bool(c) and c.get('fam') not in NOT_FIN_HOUSE and c.get('sub') != 'Corporate VC'
 
 
 def merge_annuaire(recettes, ann):
@@ -145,6 +157,7 @@ def run_indeed(structs, recettes, log=print):
         log('indeed : JobSpy indisponible (' + str(e)[:60] + ')')
         return {}, []
     idx = name_index(structs)
+    byid = {c['id']: c for c in structs}
     fast = {cid for cid, r in recettes.items() if any(m.get('m') in FAST for m in (r.get('methods') or []))}
     rows, seen, okq, errs = [], set(), 0, 0
     for country, loc, qs in QUERIES:
@@ -167,9 +180,11 @@ def run_indeed(structs, recettes, log=print):
     results, pseudo = {}, {}
     for r in rows:
         title, comp = _s(r.get('title')), _s(r.get('company'))
-        if not title or not comp or not is_intern(title) or not FIN_TITLE.search(title + ' ' + comp):
+        if not title or not comp or not is_intern(title):
             continue
         cid = match_name(comp, idx)
+        if not FIN_TITLE.search(title + ' ' + comp) and not fin_house(byid.get(cid)):
+            continue
         if cid and cid in fast:
             continue  # structure déjà lue par sa plateforme ou son site : ce serait un doublon
         if not cid:

@@ -167,7 +167,8 @@ GENERIC = {'internship', 'internships', 'intern', 'interns', 'stage', 'stages', 
            'student', 'students', 'trainee', 'trainees', 'scheme', 'schemes', 'opportunities', 'our', 'nos', 'early', 'careers', 'career', 'summer', 'spring',
            'insight', 'week', 'weeks', '&', 'and', 'et', 'les', 'offres', 'de', 'des', 'for', 'roles', 'jobs', 'alternance', 'alternances', 'vie', 'off-cycle', 'the', 'and/or'}
 NAVLIKE = re.compile(r"^(search|find|explore|discover|view|see|browse|learn|apply now|our |nos |d[ée]couvr|rejoign|voir|toutes? les|all |more |en savoir|read)", re.I)
-FIN_TITLE = re.compile(r"financ|m&a|merger|fusion|acquisition|treasury|tr[ée]sor|contr[ôo]le de gestion|controll|audit|comptab|account|fp&a|invest|corporate dev|strat[ée]g|strategy|business analyst|risk|risque|tax|fiscal|credit|cr[ée]dit|pricing|valuation|[ée]valuation|economi|[ée]conom|banking|bank|capital|consolidation|reporting financ|private equity|venture|asset|wealth|patrimoin|fund|fonds|trading|market|march[ée]s|actuar|quant|deal|transaction", re.I)
+FIN_TITLE = re.compile(r"financ|m&a|merger|fusion|acquisition|treasury|tr[ée]sor|contr[ôo]le de gestion|controll|audit|comptab|account|fp&a|invest|corporate dev|strat[ée]g|strategy|business analyst|risk|risque|tax|fiscal|credit|cr[ée]dit|pricing|valuation|[ée]valuation|economi|[ée]conom|banking|bank|capital|consolidation|reporting financ|private equity|venture|asset|wealth|patrimoin|fund|fonds|trading|market|march[ée]s|actuar|quant|deal|transaction|"
+                       r"equity|fixed income|restructur|\bdebt\b|dette|\blbo\b|leverag|securiti[sz]|titrisation|derivativ|d[ée]riv[ée]s|structured|structur[ée]s|syndicat|hedge|portfolio|portefeuille|commodit|\bfx\b", re.I)
 
 
 VIE_RE = re.compile(r"\bV\.?\s?I\.?\s?E\b")   # en majuscules seulement (« vie privée » n'est pas un VIE)

@@ -11,7 +11,8 @@ import os, re, time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from commun import S, clean, is_intern, FIN_TITLE, iso, _norm, country_of, load, save, official_site, direct_ok
-from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, AGG, is_hl
+from taxonomie import norm as tnorm
+from sources import name_index, match_name, LEGAL, HL_TITLE, FAST, AGG, is_hl, fin_house
 
 PER_PASS = int(os.environ.get('AGG_PER_PASS', '30'))
 # Google et Glassdoor ne renvoient rien depuis les serveurs GitHub (Glassdoor répond 403) : leurs tours sont laissés à Indeed
@@ -237,24 +238,54 @@ def run_aggregators(structs, recettes, run_no, log=print):
     return attach(rows, structs, recettes)
 
 
+TITLE_NOISE = {'h', 'f', 'hf', 'fh', 'm', 'w', 'd', 'stage', 'stages', 'stagiaire', 'intern', 'interns', 'internship', 'de', 'du', 'des', 'en', 'la', 'le', 'les',
+               'et', 'and', 'of', 'the', 'for', 'in', 'at', 'a', 'an', 'au', 'aux', 'mois', 'month', 'months', 'cdi', 'cdd', 'paris', 'london', 'france', 'uk',
+               'janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre',
+               'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'}
+
+
+def title_tokens(title):
+    return {w for w in re.findall(r"[a-z0-9&]{2,}", tnorm(title)) if w not in TITLE_NOISE and not re.fullmatch(r'20\d{2}|\d', w)}
+
+
+def same_title(tok, others):
+    """L'intitulé (sans les mots creux) est-il contenu aux trois quarts dans un intitulé déjà connu, ou l'inverse ?"""
+    if not tok or not others:
+        return True  # intitulé trop pauvre (« Stage »), ou rien à comparer : on garde l'ancien comportement
+    return any(o and len(tok & o) / min(len(tok), len(o)) >= 0.75 for o in others)
+
+
 def attach(rows, structs, recettes):
     """Rattache des annonces d'agrégateur aux structures de la liste ou à des sociétés hors liste (mêmes filtres pour tous les agrégateurs)."""
     idx = name_index(structs)
+    byid = {c['id']: c for c in structs}
     fast = {cid for cid, r in recettes.items() if any(m.get('m') in FAST for m in (r.get('methods') or []))}
     # structures dont la plateforme donne vraiment des offres : les annonces d'agrégateurs seraient des doublons.
     # Les autres (page lue mais 0 offre, comme Goldman Sachs) gardent les offres trouvées par les agrégateurs.
     offs = (load('offers.json') or {}).get('offers') or []
     served = {o['company_id'] for o in offs if o.get('status') == 'open' and o.get('via') not in AGG
               and o.get('via') not in ('html', 'watch', 'page', 'render', 'api')}
+    # intitulés déjà connus par la lecture directe de chaque structure (ouverts ou fermés) : une annonce d'agrégateur n'est un
+    # doublon que si elle ressemble à l'un d'eux. Avant, toute annonce d'une structure « servie » était jetée, même quand sa
+    # plateforme ne publie qu'une partie des postes (autre pays, autre entité, offre absente du portail).
+    known = {}
+    for o in offs:
+        if o.get('via') not in AGG:
+            known.setdefault(o['company_id'], []).append(title_tokens(o.get('title')))
     results, pseudo, dedup = {}, {}, set()
     for x in rows:
         title, comp, csite = x['title'], x.pop('company', ''), x.pop('csite', '')
         trust = x.get('trust')  # source 100 % finance : l'intitulé n'a pas à contenir un mot-clé financier
-        if not title or not comp or not (trust or is_intern(title) or x.get('commit')) or not (trust or FIN_TITLE.search(title + ' ' + comp)):
+        if not title or not comp or not (trust or is_intern(title) or x.get('commit')):
             continue
         cid = match_name(comp, idx)
-        if cid and cid in fast and cid in served:
-            continue  # structure déjà lue par sa plateforme ou son site : ce serait un doublon
+        # intitulé financier exigé, sauf source 100 % finance ou maison de finance de la liste (voir fin_house)
+        if not (trust or FIN_TITLE.search(title + ' ' + comp) or fin_house(byid.get(cid))):
+            continue
+        if cid and cid in fast and cid in served and x.get('src') != 'talnet' and same_title(title_tokens(title), known.get(cid) or ()):
+            continue  # structure déjà lue par sa plateforme ou son site, et poste déjà connu : ce serait un doublon
+        # tal.net n'est pas un agrégateur mais un second portail de la maison : Rothschild & Co publie la banque privée sur Workday
+        # et tous les stages Global Advisory sur tal.net (les vrais doublons sont regroupés ensuite par group_dups)
         if not cid:
             if not trust and not HL_TITLE.search(title):
                 continue
