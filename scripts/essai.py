@@ -5,12 +5,14 @@ Pour chaque recette dédiée (data/dedies.json, plus les candidates ci-dessous) 
 combien de stages gardés, la fiche d'un stage se lit-elle ? Puis le balayage complet de Welcome to the Jungle et un lot LinkedIn à blanc.
 Le journal (dépôt public) ne contient que des comptes : aucune adresse, aucun titre, aucun texte d'offre.
 """
-import json, os, sys, time
+import os, sys, threading, time
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import commun
 from commun import load, FETCHERS, keep_offer, detail_text, stage_in_text, bad_page, months_of
-from sources import merge_dedies, AGG
+from sources import merge_dedies
+
+MAX_S = float(os.environ.get('ESSAI_MAX_S', '150'))  # temps maximum d'une source
 
 # recettes à l'essai avant d'entrer dans data/dedies.json (sites de recrutement des cabinets d'audit et de transaction services)
 CANDIDATES = {
@@ -45,8 +47,14 @@ def main():
         for m in meths:
             v = tuple(m['v']) if isinstance(m['v'], list) else m['v']
             t0, err, raw = time.time(), '', []
-            try: raw = FETCHERS[m['k']](c, v)
-            except Exception as e: err = type(e).__name__ + ' ' + str(e)[:60].replace('http', 'h..p')
+            box = {}
+
+            def work():
+                try: box['raw'] = FETCHERS[m['k']](c, v)
+                except Exception as e: box['err'] = type(e).__name__ + ' ' + str(e)[:60].replace('http', 'h..p')
+            th = threading.Thread(target=work, daemon=True); th.start(); th.join(MAX_S)
+            if th.is_alive(): err = f'plus de {MAX_S:.0f} s : abandonné'
+            raw, err = box.get('raw') or [], err or box.get('err', '')
             for x in raw: x['src'] = m['k']
             commun.CAND_PENDING.clear()
             kept = [x for x in raw if keep_offer(x)]
