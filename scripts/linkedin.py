@@ -104,7 +104,7 @@ def search(q, loc, start=0):
 
 def gather(queries, log=print):
     """Annonces des recherches de ce lot. Renvoie (lignes, bilan). S'arrête à la première limite de requêtes."""
-    rows, seen, t0, n_req, done, limited, errs = [], set(), time.time(), 0, 0, False, 0
+    rows, seen, t0, n_req, done, limited, errs, begun = [], set(), time.time(), 0, 0, False, 0, 0
     for q, loc in queries:
         if time.time() - t0 > BUDGET_S or limited: break
         for page in range(PAGES):
@@ -114,6 +114,7 @@ def gather(queries, log=print):
                 limited = True; break
             except Exception:
                 errs += 1; break
+            if page == 0: begun += 1  # première page lue : les 10 annonces les plus récentes de cette recherche sont là
             new = [x for x in got if x['url'] not in seen]
             for x in new: seen.add(x['url']); rows.append(x)
             time.sleep(random.uniform(*PAUSE))
@@ -122,7 +123,7 @@ def gather(queries, log=print):
             pass
         if not limited: done += 1
         if errs >= 5: break
-    return rows, {'recherches': done, 'requetes': n_req, 'annonces': len(rows), 'limite': limited, 'erreurs': errs, 'secondes': round(time.time() - t0)}
+    return rows, {'recherches': done, 'entamees': begun, 'requetes': n_req, 'annonces': len(rows), 'limite': limited, 'erreurs': errs, 'secondes': round(time.time() - t0)}
 
 
 def main():
@@ -136,7 +137,10 @@ def main():
     pos_t, pos_o = (int(prev.get('pos_t') or 0), int(prev.get('pos_o') or 0)) if same else (0, 0)
     order, n_t, n_o = plan(SHARD, SHARDS, pos_t, pos_o, MAX_Q)
     rows, st = gather([q for q, _ in order])
-    done = order[:st['recherches']]
+    # LinkedIn coupe souvent un serveur après une à trois requêtes (mesuré le 21/11/2026 : aucune recherche complète sur 12 lots).
+    # Une recherche dont la première page a été lue compte donc comme faite : le passage suivant passe à la suivante,
+    # au lieu de relire indéfiniment la première page de la même recherche.
+    done = order[:st['entamees']]
     pos_t = (pos_t + sum(1 for _, k in done if k == 't')) % max(1, n_t)
     pos_o = (pos_o + sum(1 for _, k in done if k == 'o')) % max(1, n_o)
     results, pseudo = attach(rows, structs, load('recettes.json') or {})
