@@ -279,9 +279,9 @@ def run_method(c, m):
     if k == 'wttj':
         return j_wttj(c, m['slug'])
     if k == 'html':
-        r = get(m['url']); return page_jobs(c, r.text, r.url)
+        return html_pages(c, m['url'])
     if k == 'watch':
-        r = get(m['url']); return mentions(r.text, r.url) + page_jobs(c, r.text, r.url)
+        r = get(m['url']); return mentions(r.text, r.url) + page_jobs(c, r.text, r.url, cand=True)
     if k == 'sitemap':
         return j_sitemap(c, m)
     raise ValueError(k)
@@ -349,7 +349,7 @@ async def render_all(items, budget=None):
                 if budget and time.time() - t0 > budget: return
                 ctx = await new_ctx(browser)
                 try:
-                    v = await asyncio.wait_for(visit(ctx, m['url']), timeout=70)
+                    v = await asyncio.wait_for(visit(ctx, m['url'], more=True), timeout=110)
                     raw = []
                     api = m.get('api')
                     if api:
@@ -358,9 +358,9 @@ async def render_all(items, budget=None):
                             if urlparse(spec['url']).path != want: continue
                             try: raw += items_from(parse_json(txt), dict(api, _c=c), v.final)
                             except Exception: pass
-                    pages = [(v.final, v.html)] + list(v.frames)
+                    pages = [(v.final, v.html)] + list(v.frames) + list(v.pages)
                     for u, h in pages:
-                        raw += page_jobs(c, h, u)
+                        raw += page_jobs(c, h, u, cand=True)
                         if m['m'] == 'watch': raw += mentions(h, u)
                     for x in raw: x['src'] = m['m']
                     res.setdefault(c['id'], []).append((raw, None))
@@ -489,9 +489,28 @@ def classify(o, text=''):
     if ct: o['contact'] = ct
 
 
-def filter_raw(c, cid, raw, ann_keys=()):
-    """Lignes brutes d'une structure qui passent les filtres (stage, boîte, intitulé, pays). Utilisé aussi par lent.py."""
-    raw = [x for x in raw if keep_offer(x) and (x.get('trust') or not foreign(c, x['url']))]
+CAND_MAX = int(os.environ.get('CAND_MAX', '120'))  # fiches de candidats lues par passage
+CAND_PER_STRUCT = int(os.environ.get('CAND_PER_STRUCT', '15'))  # par structure et par passage : une grande maison ne prend pas toute la place
+CAND_BUDGET_S = float(os.environ.get('CAND_BUDGET_S', '80'))
+
+
+def cand_queue(byid):
+    """Candidats à vérifier ce passage : structures de la liste d'abord, puis les grandes maisons et les hors liste."""
+    per, out = Counter(), []
+    for key, (dk, cid) in sorted(CAND_PENDING.items(), key=lambda kv: (is_hl(kv[1][1]) or not kv[1][1], kv[1][1], kv[0])):
+        if per[cid] >= CAND_PER_STRUCT: continue
+        per[cid] += 1; out.append(key)
+        if len(out) >= CAND_MAX: break
+    return out
+
+
+def filter_raw(c, cid, raw, ann_keys=(), keep_cands=False):
+    """Lignes brutes d'une structure qui passent les filtres (stage, boîte, intitulé, pays). Utilisé aussi par lent.py
+    (keep_cands : les intitulés sans mot de stage pas encore vérifiés voyagent jusqu'ici, où leur fiche est lue)."""
+    for x in raw: x['_cid'] = cid
+    try: raw = [x for x in raw if keep_offer(x, keep_cands) and (x.get('trust') or not foreign(c, x['url']))]
+    finally:
+        for x in raw: x.pop('_cid', None)
     if c.get('fam') in ('corp', 'consulting', 'fintech', '', None):
         raw = [x for x in raw if x.get('trust') or FIN_TITLE.search(x.get('title') or '') or (c.get('fam') == 'consulting' and re.search(r'consult', x.get('title') or '', re.I))]
     raw = [x for x in raw if title_ok(c, x)]  # Corporate VC : intitulé finance exigé ; grands groupes : postes hors finance écartés
@@ -607,7 +626,7 @@ def check_links(offers, close):
     return dead
 
 
-LITE_DROP = ('excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
+LITE_DROP = ('cand', 'excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
              'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v', 'li_v', 'li_reset', 'nav_dead')
 
 
@@ -901,6 +920,11 @@ def main():
             if x.get('detail') and len(x.get('desc') or '') < 600: o['dk'] = list(x['detail'])
             elif x.get('url') and not x.get('desc') and o['via'] in ('api', 'render', 'html', 'page', 'watch'): o['dk'] = ['page', x['url']]
             if (x.get('src') or info['via']) in fresh_src and (not x.get('posted') or x.get('src') in PLUS): o['initial'] = True
+            # Welcome to the Jungle relu après la panne de l'ancienne adresse : une offre publiée il y a plus de 14 jours était déjà en ligne, pas « nouvelle »
+            if x.get('src') == 'wttj' and str(x.get('posted') or '9999') < (NOW - dt.timedelta(days=14)).strftime('%Y-%m-%d'): o['initial'] = True
+            if x.get('cand'):  # intitulé sans mot de stage, reconnu comme stage par sa fiche
+                o['cand'] = 1
+                if x.get('cand_boot'): o['initial'] = True  # vérifiée à la mise en route : déjà en ligne avant, pas « nouvelle »
             offers[oid] = o; url_idx[o['url']] = o
             new_ids.append(oid)
             own_titles.add(_norm(o['title']) + '|' + country_of(o.get('location') or ''))
@@ -1050,10 +1074,28 @@ def main():
                 if o.get('dk_round', 0) < 4 and not server_blocked(o, o['dk']): o['dk_wait'] = [o['dk'], (NOW + dt.timedelta(hours=12)).strftime('%Y-%m-%dT%H:%M:%SZ')]
                 o['dk_round'] = o.get('dk_round', 0) + 1; o.pop('dk', None); o.pop('dk_fail', None)
                 if o['dk_round'] > 4: o.setdefault('ctx', '')  # fiche illisible : on garde ce que l'API a donné
+    # candidats (intitulé finance sans mot de stage) : fiche lue une fois, verdict gardé ; gardés au passage suivant si c'est un stage
+    cands = cand_queue(byid)
+    n_cand = [0, 0]
+
+    def check(key):
+        if time.time() - t_details > min(CAND_BUDGET_S, DETAILS_BUDGET_S): return
+        r = cand_check(key)
+        n_cand[0] += 1; n_cand[1] += r == 's'
+
+    def job(item):
+        kind, v = item
+        return fill(v) if kind == 'f' else check(v)
+    jobs, i, j = [], 0, 0  # une lecture de candidat pour deux fiches détaillées : aucun des deux ne passe toujours après l'autre
+    while i < len(need) or j < len(cands):
+        for _ in range(2):
+            if i < len(need): jobs.append(('f', need[i])); i += 1
+        if j < len(cands): jobs.append(('c', cands[j])); j += 1
     try:
-        with ThreadPoolExecutor(WORKERS) as ex: list(ex.map(fill, need))
+        with ThreadPoolExecutor(WORKERS) as ex: list(ex.map(job, jobs))
     except Exception as e:
         err('fiches détaillées', e)
+    if cands: print(f'candidats sans mot de stage : {n_cand[0]} fiches lues sur {len(cands)} en attente, {n_cand[1]} stages', flush=True)
 
     texts = {}
 
@@ -1190,6 +1232,9 @@ def main():
     meta['degraded'] = bool(meta['degraded'] or ERRS)
     try: meta['lite_bytes'] = os.path.getsize(os.path.join(DATA, 'offers-lite.json'))
     except OSError: pass
+    try: cand_save()
+    except Exception as e: err('candidats', e)
+    meta['cand'] = {'attente': len(CAND_PENDING), 'verdicts': len(cand_db()['v']), 'stages': sum(1 for e in cand_db()['v'].values() if e.get('r') == 's')}
     save('meta.json', meta, pretty=True)
     save('state.json', state)
     m2 = dict(meta); m2.pop('tracked'); m2['failed'] = len(failed)

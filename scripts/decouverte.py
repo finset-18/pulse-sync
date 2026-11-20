@@ -107,9 +107,91 @@ class Visit:
         self.html = ''
         self.frames = []
         self.title = ''
+        self.pages = []         # (adresse, HTML) des pages suivantes d'une liste paginée (passage quotidien seulement)
 
 
-async def visit(ctx, url, timeout=25000):
+# boutons qui ajoutent des offres à la liste sans changer de page ; liens de page suivante
+MORE_BTN = re.compile(r"^\s*(?:\+\s*)?(?:voir|afficher|charger|montrer)\s+(?:plus|davantage|la\s+suite|d['’]autres|les\s+autres|plus\s+d['’]offres|toutes\s+les\s+offres)|"
+                      r"^\s*plus\s+d['’]\s*(?:offres|r[ée]sultats|annonces|postes)|^\s*(?:load|show|see|view)\s+(?:more|all)|^\s*more\s+(?:jobs|results|positions|offers|roles|vacancies|opportunities)|"
+                      r"^\s*(?:mehr|weitere)\s+(?:anzeigen|laden|ergebnisse|stellen|jobs)|^\s*(?:ver|cargar|mostrar)\s+m[aá]s|^\s*(?:mostra|carica)\s+(?:altri|di\s+pi[uù])|^\s*(?:meer|toon\s+meer)\b", re.I)
+NEXT_BTN = re.compile(r"^\s*(?:next|next\s+page|suivant|suivante|page\s+suivante|weiter|n[äa]chste(?:\s+seite)?|siguiente|successiva|volgende|[›»>→]|>>)\s*$", re.I)
+MORE_MAX = int(os.environ.get('MORE_MAX', '12'))       # clics « Voir plus » au plus
+PAGES_MAX = int(os.environ.get('RENDER_PAGES', '8'))   # pages suivantes au plus
+MORE_BUDGET_S = float(os.environ.get('MORE_BUDGET_S', '30'))
+_JOBS_JS = """() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(h => /job|offre|offer|poste|stage|vacanc|position|career|carri|emploi|requisition|stelle|vacature/i.test(h)).length"""
+
+
+_MARK_JS = """([kind, more, next]) => {
+  const reMore = new RegExp(more, 'i'), reNext = new RegExp(next, 'i'), host = location.host;
+  document.querySelectorAll('[data-fs-click]').forEach(e => e.removeAttribute('data-fs-click'));
+  const sel = kind === 'more' ? "button, [role=button], a:not([href]), a[href='#'], a[href^='javascript'], input[type=button], input[type=submit]"
+                              : "a[href], button, [role=button], [aria-label]";
+  const vis = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length) && !e.disabled && e.getAttribute('aria-disabled') !== 'true';
+  for (const e of document.querySelectorAll(sel)) {
+    const txt = (e.innerText || e.value || '').trim(), aria = (e.getAttribute('aria-label') || e.getAttribute('title') || '').trim();
+    if (kind === 'more') { if (!(txt && txt.length < 60 && reMore.test(txt)) || !vis(e)) continue; }
+    else {
+      if (!((txt && txt.length < 30 && reNext.test(txt)) || /^(next|suivant|page suivante|next page|go to next page)\b/i.test(aria)) || !vis(e)) continue;
+      const h = e.getAttribute('href');
+      if (h && !h.startsWith('#') && !h.startsWith('javascript')) { try { if (new URL(h, location.href).host !== host) continue; } catch (x) { continue; } }
+    }
+    e.setAttribute('data-fs-click', '1'); return true;
+  }
+  return false;
+}"""
+
+
+def _js_rx(rx):
+    return rx.pattern  # motif compatible JavaScript (groupes non capturants, classes de caractères, \\s)
+
+
+async def _click(page, kind):
+    """Marque puis clique le premier bouton « Voir plus » (kind='more') ou « page suivante » (kind='next') visible. True si cliqué."""
+    try:
+        if not await page.evaluate(_MARK_JS, [kind, _js_rx(MORE_BTN), _js_rx(NEXT_BTN)]): return False
+        el = page.locator('[data-fs-click]').first
+        await el.scroll_into_view_if_needed(timeout=2000)
+        await el.click(timeout=3000)
+        return True
+    except Exception:
+        return False
+
+
+async def more_and_pages(page, v):
+    """Liste d'offres complète : clique « Voir plus » tant que de nouveaux liens arrivent (la page reste la même),
+    puis suit « page suivante » en gardant chaque page. v.final / v.html : la page après les « Voir plus »."""
+    t_end = time.time() + MORE_BUDGET_S
+    try:
+        for _ in range(MORE_MAX):
+            if time.time() > t_end: break
+            before, url0 = await page.evaluate(_JOBS_JS), page.url
+            if not await _click(page, 'more'): break
+            try: await page.wait_for_load_state('networkidle', timeout=5000)
+            except Exception: pass
+            await page.wait_for_timeout(700)
+            if page.url.split('#')[0] != url0.split('#')[0]: break  # le bouton a changé de page : on s'arrête là
+            if await page.evaluate(_JOBS_JS) <= before: break
+    except Exception:
+        pass
+    v.final, v.html = page.url, await page.content()
+    seen_html = {v.html}
+    try:
+        for _ in range(PAGES_MAX):
+            if time.time() > t_end: break
+            if not await _click(page, 'next'): break
+            try: await page.wait_for_load_state('networkidle', timeout=6000)
+            except Exception: pass
+            await page.wait_for_timeout(700)
+            h = await page.content()
+            if h in seen_html: break
+            seen_html.add(h)
+            v.pages.append((page.url, h))
+    except Exception:
+        pass
+
+
+async def visit(ctx, url, timeout=25000, more=False):
+    """more : liste complète (« Voir plus », pages suivantes), pour le passage quotidien ; la découverte n'en a pas besoin."""
     v = Visit()
     page = await ctx.new_page()
     pending = []
@@ -140,9 +222,11 @@ async def visit(ctx, url, timeout=25000):
             await page.mouse.wheel(0, 4000); await page.wait_for_timeout(1500)
             await page.mouse.wheel(0, 8000); await page.wait_for_timeout(1000)
         except Exception: pass
-        v.final = page.url
+        if more: await more_and_pages(page, v)  # « Voir plus » puis pages suivantes (v.final / v.html : la liste après les « Voir plus »)
+        else:
+            v.final = page.url
+            v.html = await page.content()
         v.title = (await page.title()) or ''
-        v.html = await page.content()
         for fr in page.frames[1:6]:
             try:
                 v.urls.append(fr.url)
