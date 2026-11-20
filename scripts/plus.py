@@ -161,13 +161,89 @@ def wttj_one(q):
     return res
 
 
-def s_wttj():
-    out = []
-    t0 = time.time()
-    with ThreadPoolExecutor(4) as ex:
-        for got in ex.map(lambda q: _safe(wttj_one, q, t0), WTTJ_Q):
-            out += got
+WTTJ_ATTRS = ['name', 'slug', 'contract_type', 'published_at', 'organization.name', 'organization.slug', 'organization.website', 'organization.logo',
+              'offices', 'contract_duration_minimum', 'contract_duration_maximum']
+WTTJ_FF = [['contract_type:internship', 'contract_type:apprenticeship', 'contract_type:vie']]
+WTTJ_TEXT_MAX = int(os.environ.get('WTTJ_TEXT_MAX', '4000'))  # annonces dont le texte complet est demandé par passage
+
+
+def _algolia(body):
+    r = S.post(ALGOLIA, json=dict(body, attributesToHighlight=[]), headers=WTTJ_H, timeout=T + 20)
+    r.raise_for_status()
+    return r.json()
+
+
+def wttj_sweep(t0, lo=0, hi=None, depth=0, out=None):
+    """Tous les stages, alternances et VIE de Welcome to the Jungle. Une recherche ne rend que 1 000 annonces : la période de
+    publication est coupée en deux tant qu'une tranche en contient davantage (une dizaine de milliers d'annonces = une quarantaine de requêtes légères)."""
+    out = {} if out is None else out
+    hi = hi or int(time.time()) + 86400
+    if time.time() - t0 > BUDGET: raise RuntimeError('budget de temps dépassé')
+    nf = [f'published_at_timestamp>={lo}', f'published_at_timestamp<{hi}']
+    n = _algolia({'query': '', 'hitsPerPage': 0, 'facetFilters': WTTJ_FF, 'numericFilters': nf}).get('nbHits') or 0
+    if n > 1000 and hi - lo > 3600 and depth < 16:
+        mid = (lo + hi) // 2
+        wttj_sweep(t0, lo, mid, depth + 1, out); wttj_sweep(t0, mid, hi, depth + 1, out)
+    elif n:
+        js = _algolia({'query': '', 'hitsPerPage': 1000, 'page': 0, 'facetFilters': WTTJ_FF, 'numericFilters': nf, 'attributesToRetrieve': WTTJ_ATTRS})
+        for h in js.get('hits') or []:
+            if h.get('objectID'): out[h['objectID']] = h
     return out
+
+
+def _wttj_row(h, text=''):
+    org = h.get('organization') or {}
+    off = (h.get('offices') or [{}])[0] or {}
+    ct = h.get('contract_type') or ''
+    logo = org.get('logo') or {}
+    logo = (logo.get('url') if isinstance(logo, dict) else logo) or ''
+    months = h.get('contract_duration_maximum') or h.get('contract_duration_minimum')
+    return row('wttj_search', org.get('name'), h.get('name'), f"https://www.welcometothejungle.com/fr/companies/{org['slug']}/jobs/{h['slug']}",
+               ', '.join(x for x in (off.get('city'), off.get('country')) if x), iso(h.get('published_at')), h.get('slug'),
+               text + (f' Durée {months} mois.' if months else ''),
+               'Alternance' if ct == 'apprenticeship' else 'VIE' if ct == 'vie' else INTERN, logo=logo, csite=org.get('website') or org.get('website_url') or '')
+
+
+def _flat(v):
+    if isinstance(v, list): return ' '.join(_flat(x) for x in v)
+    if isinstance(v, dict): return ' '.join(_flat(x) for x in v.values())
+    return str(v or '')
+
+
+def s_wttj():
+    """Balayage complet (toutes les annonces de stage du site, pas seulement celles que 24 mots-clés ramènent) ; l'ancienne
+    recherche par mots-clés reste le repli si le balayage échoue. Seules les annonces qui peuvent être gardées (structure de la
+    liste ou intitulé financier) reçoivent leur texte complet, demandé par lots de 150."""
+    t0 = time.time()
+    try:
+        hits = wttj_sweep(t0)
+        if len(hits) < 500: raise RuntimeError(f'balayage trop court ({len(hits)} annonces)')
+    except Exception as e:
+        print('wttj : balayage complet en échec (' + str(e)[:80] + '), recherche par mots-clés', flush=True)
+        out = []
+        with ThreadPoolExecutor(4) as ex:
+            for got in ex.map(lambda q: _safe(wttj_one, q, t0), WTTJ_Q):
+                out += got
+        return out
+    from commun import FIN_TITLE
+    from sources import name_index, match_name
+    idx = name_index(load('structures.json') or [])
+    keep = [h for h in hits.values() if (h.get('organization') or {}).get('slug') and h.get('slug') and h.get('name')
+            and (FIN_TITLE.search(h['name'] + ' ' + str((h.get('organization') or {}).get('name') or '')) or match_name((h.get('organization') or {}).get('name'), idx))]
+    keep.sort(key=lambda h: str(h.get('published_at') or ''), reverse=True)
+    texts = {}
+    ids = [h['objectID'] for h in keep[:WTTJ_TEXT_MAX]]
+    for i in range(0, len(ids), 150):
+        if time.time() - t0 > BUDGET: break
+        try:
+            js = _algolia({'query': '', 'hitsPerPage': 1000, 'filters': ' OR '.join(f'objectID:"{x}"' for x in ids[i:i + 150]),
+                           'attributesToRetrieve': ['summary', 'key_missions', 'profile']})
+            for d in js.get('hits') or []:
+                texts[d.get('objectID')] = clean(' '.join(_flat(d.get(k)) for k in ('summary', 'key_missions', 'profile')))
+        except Exception:
+            break
+    print(f'wttj : {len(hits)} annonces de stage sur le site, {len(keep)} retenues avant rattachement, {len(texts)} textes lus', flush=True)
+    return [_wttj_row(h, texts.get(h['objectID'], '')) for h in keep]
 
 
 TAL_A = re.compile(r'<a\b[^>]*href="([^"]*/opp/(\d+)[^"]*)"[^>]*>(.*?)</a>(.*?)(?=</tr>|<a\b[^>]*/opp/|$)', re.I | re.S)

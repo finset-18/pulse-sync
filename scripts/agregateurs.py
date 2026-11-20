@@ -20,18 +20,23 @@ JS_SITES = set(os.environ.get('AGG_SITES', 'indeed,hellowork,linkedin,google').s
 LANE_BUDGET_S = float(os.environ.get('AGG_LANE_BUDGET_S', '900'))  # temps maximum par site et par passage (LinkedIn, HelloWork lisent chaque fiche)
 HOURS = int(os.environ.get('AGG_HOURS', str(24 * 21)))
 
+# Cœur de cible en tête (M&A, private equity, venture capital, transaction services, audit) : les zones qui ne lisent que le début
+# de la liste (FR[:8], EN[:8]) cherchent d'abord ces métiers.
 FR = ['stage M&A', 'stage fusions acquisitions', 'stage private equity', 'stage capital investissement', 'stage venture capital',
-      'stage corporate finance', 'stage transaction services', 'stage analyste financier', 'stage asset management',
+      'stage transaction services', 'stage audit financier', 'stage auditeur', 'stage corporate finance', 'stage analyste investissement',
+      'stage commissariat aux comptes', 'stage due diligence', 'stage LBO', 'stage capital développement', 'stage analyste M&A',
+      'stage analyste financier', 'stage asset management',
       'stage gestion de portefeuille', 'stage finance de marché', 'stage sales trading', 'stage structuration', 'stage dette privée',
       'stage financement structuré', "stage banque d'affaires", 'stage investment banking', 'stage leveraged finance',
       'stage analyste crédit', 'stage gestion de patrimoine', 'stage family office', 'stage investissement immobilier',
       'stage infrastructure investissement', 'stage equity research', 'stage risk management', 'stage quant', 'stage trésorerie',
-      'stage restructuring', 'stage ECM DCM', 'stage relations investisseurs']
-EN = ['investment banking intern', 'M&A intern', 'private equity intern', 'venture capital intern', 'off-cycle internship finance',
-      'summer analyst', 'asset management intern', 'sales and trading intern', 'equity research intern', 'credit analyst intern',
-      'leveraged finance intern', 'restructuring intern', 'transaction services intern', 'corporate finance intern', 'quant intern',
+      'stage restructuring', 'stage ECM DCM', 'stage relations investisseurs', 'stage évaluation financière', 'stage fonds d\'investissement']
+EN = ['investment banking intern', 'M&A intern', 'private equity intern', 'venture capital intern', 'transaction services intern',
+      'audit intern', 'off-cycle internship finance', 'summer analyst', 'corporate finance intern', 'growth equity intern',
+      'asset management intern', 'sales and trading intern', 'equity research intern', 'credit analyst intern',
+      'leveraged finance intern', 'restructuring intern', 'due diligence intern', 'quant intern',
       'real estate investment intern', 'infrastructure investment intern', 'wealth management intern', 'fund accounting intern',
-      'risk management intern']
+      'risk management intern', 'valuation intern']
 # (pays Indeed/Glassdoor, lieu, requêtes, sites JobSpy)
 ZONES = [
     ('france', 'Paris', FR, ('indeed', 'glassdoor', 'google', 'hellowork', 'linkedin')),
@@ -48,15 +53,18 @@ ZONES = [
     ('italy', 'Milan', EN[:8], ('indeed', 'google')),
     ('ireland', 'Dublin', EN[:8], ('indeed', 'google')),
     ('france', 'Lille', FR[:10], ('indeed', 'hellowork')),
-    ('france', 'Bordeaux', FR[:6], ('indeed', 'hellowork')),
-    ('france', 'Nantes', FR[:6], ('indeed', 'hellowork')),
-    ('france', 'Marseille', FR[:6], ('indeed', 'hellowork')),
+    ('france', 'Bordeaux', FR[:8], ('indeed', 'hellowork')),
+    ('france', 'Nantes', FR[:8], ('indeed', 'hellowork')),
+    ('france', 'Marseille', FR[:8], ('indeed', 'hellowork')),
+    ('france', 'Toulouse', FR[:8], ('indeed', 'hellowork')),
+    ('france', 'Strasbourg', FR[:8], ('indeed', 'hellowork')),
+    ('france', 'Rennes', FR[:8], ('indeed', 'hellowork')),
     ('france', 'France', FR, ('indeed', 'hellowork')),
     ('hong kong', 'Hong Kong', EN[:10], ('indeed',)),
     ('singapore', 'Singapore', EN[:10], ('indeed',)),
     ('united arab emirates', 'Dubai', EN[:8], ('indeed',)),
 ]
-FT_Q = ['stage finance', 'stage analyste financier', 'stage fusions acquisitions', 'stage private equity', 'stage banque',
+FT_Q = ['stage audit', 'stage commissariat aux comptes', 'stage transaction services', 'stage capital investissement', 'stage finance', 'stage analyste financier', 'stage fusions acquisitions', 'stage private equity', 'stage banque',
         'stage gestion actifs', 'stage audit financier', 'stage investissement', 'stage marchés financiers', 'stage crédit']
 def tasks():
     out = []

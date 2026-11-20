@@ -1011,6 +1011,7 @@ ATS_RE = {
     'oracle': re.compile(r'https?://([\w-]+\.fa(?:\.[\w-]+)?\.oraclecloud\.com)/hcmUI/CandidateExperience/[a-z]{2}(?:-[A-Z]{2})?/sites/([\w-]+)', re.I),
     'oracleapi': re.compile(r'https?://([\w-]+\.fa(?:\.[\w-]+)?\.oraclecloud\.com)/hcmRestApi/resources/[\w.-]+/recruitingCEJobRequisitions[^"\'\s<>]*?siteNumber=([\w-]+)', re.I),
     'wttj': re.compile(r'welcometothejungle\.com/(?:fr|en|es|cs|sk)/companies/([\w-]+)', re.I),
+    'teamtailor': re.compile(r'(?<![\w-])([\w-]+)\.teamtailor\.com', re.I),
 }
 # plateformes reconnues mais lues comme des pages (liste d'offres en HTML ou via l'API captée par la découverte)
 ATS_HOSTS = re.compile(r'(teamtailor\.com|icims\.com|jobvite\.com|avature\.net|taleo\.net|successfactors\.(?:com|eu)|sapsf\.(?:com|eu)|talent-soft\.com|talentsoft\.com|'
@@ -1018,7 +1019,7 @@ ATS_HOSTS = re.compile(r'(teamtailor\.com|icims\.com|jobvite\.com|avature\.net|t
                        r'welcomekit\.co|jobteaser\.com|myworkdayjobs\.com|greenhouse\.io|lever\.co|smartrecruiters\.com|recruitee\.com|personio\.|'
                        r'oraclecloud\.com|eightfold\.ai|phenompeople\.com|radancy|tbcdn|ultipro\.com|ukg\.|hirebridge|bullhorn|jobs\.net|beetween\.com|'
                        r'werecruit\.io|kenjo\.io|factorial|zohorecruit|manatal|ats\.rippling|dover\.com|homerun\.co|jobylon|varbi|emply|hr-manager\.net)', re.I)
-BAD_SLUG = {'www', 'app', 'api', 'embed', 'js', 'static', 'assets', 'cdn', 'login', 'careers', 'jobs', 'cookie-policy-scripts', 'widget', 'widgets', 'boards'}
+BAD_SLUG = {'www', 'app', 'api', 'career', 'assets-aws', 'embed', 'js', 'static', 'assets', 'cdn', 'login', 'careers', 'jobs', 'cookie-policy-scripts', 'widget', 'widgets', 'boards'}
 
 
 def detect_ats(text):
@@ -1066,8 +1067,8 @@ def relevant(c, slug):
 
 
 def ats_ok(c, k, v):
-    if k in ('workday', 'oracle'): return True
-    return relevant(c, v[0] if k == 'lever' else v)
+    if k in ('workday', 'oracle', 'yello'): return True
+    return relevant(c, v[0] if k == 'lever' else str(v))
 
 
 class Partial(list):
@@ -1172,7 +1173,8 @@ def j_ashby(c, slug):
 
 
 def j_recruitee(c, slug):
-    js = get(f'https://{slug}.recruitee.com/api/offers/').json()
+    # « slug » avec un point : site carrières Recruitee servi sur le domaine de l'entreprise (carrieresfrance.grant-thornton.fr)
+    js = get(f"https://{slug if '.' in str(slug) else str(slug) + '.recruitee.com'}/api/offers/").json()
     return [{'title': j.get('title'), 'url': j.get('careers_url'), 'location': ', '.join(x for x in [j.get('city'), j.get('country')] if x) or j.get('location', ''),
              'posted': iso(j.get('published_at') or j.get('created_at')), 'ext': str(j.get('id')), 'desc': clean((j.get('description') or '') + ' ' + (j.get('requirements') or '')),
              'commit': j.get('employment_type_code') or '', 'deadline': (j.get('close_at') or '')[:10] or None} for j in js.get('offers', [])]
@@ -1317,9 +1319,103 @@ def j_wttj(c, slug):
     return out
 
 
+def _tag(x, name):
+    m = re.search(rf'<{name}(?:\s[^>]*)?>(.*?)</{name}>', x, re.S)
+    return clean(html.unescape(re.sub(r'^\s*<!\[CDATA\[|\]\]>\s*$', '', m.group(1).strip()))) if m else ''
+
+
+def j_teamtailor(c, slug):
+    """Site carrières Teamtailor (compte « x » de x.teamtailor.com, ou domaine de l'entreprise : recrutement.bdo.fr).
+    Le flux /jobs.rss donne toutes les offres avec description, lieu et date, 100 par page (offset)."""
+    host = slug if '.' in str(slug) else f'{slug}.teamtailor.com'
+    out, seen = [], set()
+    for off in range(0, 2000, 100):
+        x = get(f'https://{host}/jobs.rss', params={'offset': off} if off else None).text
+        if off == 0 and '<rss' not in x[:600] and '<item>' not in x: raise RuntimeError('teamtailor : pas de flux')
+        items = x.split('<item>')[1:]
+        for it in items:
+            url, title = _tag(it, 'link'), _tag(it, 'title')
+            if not url or not title or url in seen: continue
+            seen.add(url)
+            loc = ', '.join(v for v in (_tag(it, 'tt:city') or _tag(it, 'tt:name'), _tag(it, 'tt:country')) if v)
+            out.append({'title': title, 'url': url, 'location': loc, 'posted': iso(_rss_date(_tag(it, 'pubDate'))), 'ext': _tag(it, 'guid') or url,
+                        'desc': (_tag(it, 'description') + ' ' + _tag(it, 'tt:department'))[:6000], 'commit': ''})
+        if len(items) < 100: break
+    return out
+
+
+def _rss_date(s):
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(s).astimezone(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    except Exception:
+        return None
+
+
+TB_LINK = re.compile(r'<a\b[^>]*href="([^"]+)"[^>]*data-job-id="(\d+)"[^>]*>(.*?)</a>', re.S | re.I)
+TB_LINK2 = re.compile(r'<a\b[^>]*data-job-id="(\d+)"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
+TB_Q = ('ActiveFacetID=0&CurrentPage={p}&RecordsPerPage=100&Distance=50&RadiusUnitType=0&Keywords=&Location=&ShowRadius=False&IsPagination=False'
+        '&CustomFacetName=&FacetTerm=&FacetType=0&SearchResultsModuleName=Search+Results&SearchFiltersModuleName=Search+Filters'
+        '&SortCriteria=0&SortDirection=0&SearchType=5&PostalCode=&ResultsType=0&fc=&fl=&fcf=&afc=&afl=&afcf=')
+
+
+def j_talentbrew(c, base):
+    """Site carrières Radancy / TalentBrew (emplois.kpmg.fr…) : la recherche du site répond en JSON, 100 offres par page,
+    chaque offre avec son métier, son lieu et son type de contrat (« Stage », « Alternance », « CDI »)."""
+    base = (base if str(base).startswith('http') else 'https://' + str(base)).rstrip('/')
+    out, seen = [], set()
+    for p in range(1, 31):
+        js = get(f'{base}/search-jobs/results?' + TB_Q.format(p=p), headers={'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json'}).json()
+        frag = js.get('results') or ''
+        got = [(m.group(1), m.group(2), m.group(3)) for m in TB_LINK.finditer(frag)] or [(m.group(2), m.group(1), m.group(3)) for m in TB_LINK2.finditer(frag)]
+        for href, jid, inner in got:
+            if jid in seen: continue
+            seen.add(jid)
+            t = re.search(r'<h[1-5][^>]*>(.*?)</h[1-5]>', inner, re.S)
+            spans = {k.lower(): clean(v) for k, v in re.findall(r'<span[^>]*class="([^"]*)"[^>]*>(.*?)</span>', inner, re.S)}
+            pick = lambda rx: next((v for k, v in spans.items() if re.search(rx, k) and v), '')
+            title = clean(t.group(1)) if t else clean(re.sub(r'<span.*', '', inner, flags=re.S))
+            if not title: continue
+            u = urljoin(base + '/', html.unescape(href))
+            out.append({'title': title, 'url': u, 'location': pick(r'location|lieu'), 'posted': None, 'ext': jid,
+                        'commit': pick(r'contract|contrat|job-?type|employment'), 'detail': ('page', u)})
+        m = re.search(r'data-total-pages="(\d+)"', frag)
+        if not got or (m and p >= int(m.group(1))) or (not m and len(got) < 100): break
+    if not out and not seen: raise RuntimeError('talentbrew : aucune offre lue')
+    return out
+
+
+YELLO_ITEM = re.compile(r'<a\b[^>]*class="[^"]*search-results__req_title[^"]*"[^>]*href="(/jobs/[^"?]+)[^"]*"[^>]*>(.*?)</a>', re.S | re.I)
+
+
+def j_yello(c, a):
+    """Tableau d'offres Yello (EY : stages et jeunes diplômés, absents de careers.ey.com). a = [hôte, tableau, filtres de pays…] ;
+    la recherche répond en JSON ({html, more_requisitions}), 25 offres par page. Le lieu est écrit sur la fiche, lue ensuite."""
+    host, board = a[0], a[1]
+    filters = [str(x) for x in a[2:]] or ['']  # « 29994=France » : identifiant du filtre de pays, et le pays à noter comme lieu par défaut
+    out, seen, errs = [], set(), 0
+    for f in filters:
+        f, _, country = f.partition('=')
+        for page in range(1, 60):
+            try:
+                js = get(f'https://{host}/job_boards/{board}/search', params={'locale': 'fr', 'query': '', 'filters': f, 'page_number': page},
+                         headers={'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json'}).json()
+            except Exception:
+                errs += 1; break
+            got = YELLO_ITEM.findall(js.get('html') or '')
+            for path, title in got:
+                if path in seen: continue
+                seen.add(path)
+                u = f'https://{host}{path}?job_board_id={board}&locale=fr'
+                out.append({'title': clean(html.unescape(title)), 'url': u, 'location': country, 'posted': None, 'ext': path.rsplit('/', 1)[-1], 'commit': '', 'detail': ('page', u)})
+            if not got or not js.get('more_requisitions'): break
+    if errs and not out: raise RuntimeError('yello injoignable')
+    return Partial(out) if errs else out
+
+
 FETCHERS = {'workday': j_workday, 'greenhouse': j_greenhouse, 'lever': j_lever, 'smartrecruiters': j_smartrecruiters, 'ashby': j_ashby, 'recruitee': j_recruitee,
             'personio': j_personio, 'workable': j_workable, 'pinpoint': j_pinpoint, 'bamboohr': j_bamboohr, 'breezy': j_breezy, 'eightfold': j_eightfold,
-            'oracle': j_oracle, 'wttj': j_wttj}
+            'oracle': j_oracle, 'wttj': j_wttj, 'teamtailor': j_teamtailor, 'talentbrew': j_talentbrew, 'yello': j_yello}
 
 
 def wttj_org(slug):
@@ -1566,7 +1662,7 @@ DESC_KEYS = ['description', 'shortDescription', 'ShortDescriptionStr', 'descript
 DEADLINE_KEYS = ['validThrough', 'closingDate', 'expirationDate', 'applicationDeadline', 'deadline', 'expiryDate', 'close_at', 'applyBefore', 'dateLimite', 'date_limite']
 START_KEYS = ['contractStartDate', 'start_date', 'startingDate', 'dateDebut', 'date_debut', 'beginDate', 'jobStartDate', 'desiredStartDate', 'internshipStartDate']
 END_KEYS = ['endDate', 'end_date', 'contractEndDate', 'dateFin', 'date_fin', 'internshipEndDate']
-COMMIT_KEYS = ['employmentType', 'contractType', 'contract_type', 'jobType', 'typeOfEmployment', 'type', 'jobSchedule', 'workType', 'contrat', 'typeContrat', 'category']
+COMMIT_KEYS = ['employmentType', 'contractType', 'contract_type', 'contract', 'jobType', 'typeOfEmployment', 'type', 'jobSchedule', 'workType', 'contrat', 'typeContrat', 'category']
 KW_KEYS = ['keyword', 'keywords', 'keyWords', 'searchText', 'searchTerm', 'searchKeyword', 'search_query', 'query', 'q', 'search', 'text', 'term', 'kw', 'what', 'motsCles', 'motcle']
 PAGE_KEYS = ['page', 'pageNumber', 'page_number', 'pageIndex', 'pageNo', 'currentPage', 'pg', 'p']
 OFFSET_KEYS = ['offset', 'start', 'from', 'skip', 'startIndex', 'startrow', 'first', 'begin']
