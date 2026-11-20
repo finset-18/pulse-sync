@@ -47,7 +47,7 @@ jobs:
           if [ "$MODE" = "sources" ]; then
             # au fil de l'eau : une source lente ou un arrêt du job ne fait pas perdre les lignes déjà obtenues
             set -o pipefail
-            python -u scripts/essai.py 2>run.err | tee run.log | grep --line-buffered -E '^(essai|wttj|linkedin lot)' | cut -c1-400 || s=$?
+            python -u scripts/essai.py 2>run.err | tee run.log | grep --line-buffered -E '^(essai|wttj|linkedin lot)' | stdbuf -oL cut -c1-400 || s=$?
             cat run.err >> run.log
           else
             python scripts/diag_acces.py > run.log 2>&1 || s=$?
