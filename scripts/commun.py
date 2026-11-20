@@ -282,15 +282,186 @@ def finance_strict(title, hl_title=None):
     return bool(ANALYST.search(t) and not NOT_FIN_ANALYST.search(t))
 
 
-def keep_offer(x):
-    """Une offre brute est-elle un stage (titre explicite, ou type de contrat donné par la plateforme) ?"""
+def keep_offer(x, cands=False):
+    """Une offre brute est-elle un stage (titre explicite, type de contrat donné par la plateforme, ou fiche qui le dit) ?
+    cands : un candidat pas encore vérifié est gardé (passage lent : il voyage jusqu'à veille.py, qui lit la fiche)."""
     t = clean(x.get('title'))
     if not t or not x.get('url'): return False
     if not_offer(t): return False
     if is_intern(t): return True
     com = x.get('commit') or ''
     # type de contrat « stage » donné par la plateforme : seuls les vrais seniors sont écartés
-    return bool(com and INTERN_COMMIT.search(com) and not senior_title(t) and not STAFF_ROLE.search(t) and not NAVLIKE.search(t))
+    if com and INTERN_COMMIT.search(com): return bool(not senior_title(t) and not STAFF_ROLE.search(t) and not NAVLIKE.search(t))
+    # intitulé finance sans le mot « stage » (« Analyste M&A – Juillet 2027 ») : c'est la fiche qui tranche
+    if com and NOT_STAGE_COMMIT.search(com): return False
+    return cand_ok(x, cands)
+
+
+# ---------------------------------------------------------------- stages dont l'intitulé ne dit pas « stage »
+# Beaucoup de boutiques et de fonds écrivent « Analyste M&A – Juillet 2027 (6 mois) » : le mot « stage » n'est que dans la fiche.
+# Un intitulé finance junior sans mot de stage est un « candidat » : gardé seulement si sa description dit clairement que c'est un stage
+# (champ « Type de contrat : Stage », « convention de stage », « 6-month internship »…). Chaque fiche n'est lue qu'une fois :
+# le verdict est gardé dans data/candidats.json (écrit par veille.py seul).
+NOT_STAGE_COMMIT = re.compile(r"\bcdi\b|\bcdd\b|permanent|regular|fixed[- ]?term|temporary|freelance|contractor|festanstellung|unbefristet|befristet", re.I)
+CAND_NO = re.compile(r"\bcdi\b|\bcdd\b|permanent|full[- ]?time|temps plein|freelance|\bassociates?\b|\bavp\b|exp[ée]riment|experienced|confirm[ée]|"
+                     r"\b\d+\s*\+?\s*(?:ans|years?|yrs)\b|mid[- ]level|\bm/w/d\b.*\bsenior", re.I)
+JUNIORISH = re.compile(r"\banaly(?:st|ste)s?\b|\bassistant(?:e)?s?\b|\bjunior\b|\bjr\.?\b|charg[ée]e?s?(?:\(e\))?\s+d['’]\s*(?:affaires|[ée]tudes|investissement|analyse)|"
+                       r"\b\d{1,2}\s*-?\s*(?:mois|months?)\b|\b(?:six|trois|quatre|cinq)\s+mois\b|"
+                       r"\b(?:janv\w*|f[ée]v\w*|mars|avril|mai|juin|juil\w*|ao[uû]t|sept\w*|oct\w*|nov\w*|d[ée]c\w*|jan\w*|feb\w*|march|apr\w*|may|june?|july?|aug\w*|sep\w*|dec\w*)\.?\s+20\d\d\b|"
+                       r"\b(?:h1|h2|s1|s2|spring|autumn|fall|winter|printemps|automne|hiver)\s+20\d\d\b", re.I)
+
+
+def cand_title(title):
+    """Intitulé finance junior sans mot de stage : à vérifier dans la fiche."""
+    t = clean(title)
+    if not t or is_intern(t) or not_offer(t) or NAVLIKE.search(t) or senior_title(t) or STAFF_ROLE.search(t): return False
+    if EXCLUDE.search(t) or CAND_NO.search(t) or hors_finance(t) or reseau_detail(t): return False
+    if not (CORE_FIN.search(t) or FINWORD.search(t) or (ANALYST.search(t) and not NOT_FIN_ANALYST.search(t))): return False
+    return bool(JUNIORISH.search(t))
+
+
+# champ de contrat écrit dans la fiche (« Type de contrat : Stage », « Employment type: Internship ») ; le premier trouvé décide.
+# « contrat » ou « contract » seuls ne comptent qu'avec deux-points (« possibilité de contrat CDI à l'issue » n'est pas le contrat proposé).
+_VAL = (r"(?:de\s+|d['’]\s*)?(stages?|stagiaire|internship|intern\b|trainee(?:ship)?|praktikum|werkstudent|working\s+student|apprentissage|alternance|"
+        r"volontariat|cdi\b|cdd\b|permanent|regular|fixed[- ]term|temporary|freelance|festanstellung|unbefristet|befristet|indefinido)")
+CONTRACT_FIELD = re.compile(r"(?:type\s+de\s+contrat|type\s+d['’]\s*emploi|nature\s+du\s+contrat|type\s+de\s+poste|contract\s+type|type\s+of\s+(?:contract|employment)|"
+                            r"employment\s+type|job\s+type|position\s+type|worker\s+(?:sub-?)?type|vertragsart|anstellungsart|tipo\s+de\s+contrato)\s*[:\-–|]?\s*" + _VAL +
+                            r"|\b(?:contrat|contract)\s*:\s*" + _VAL, re.I)
+# expérience passée ou demandée (« une première expérience en stage », « issu d'un stage de 6 mois », « previous internship ») : jamais lue comme le contrat proposé
+_STG = r"(?:stages?|internships?|stagiaires?|summer\s+analyst|praktik\w*)"
+PAST_STAGE = re.compile(r"(?:exp[ée]riences?|first\s+experience|r[ée]alis[ée]e?s?|effectu[ée]e?s?|accompli\w*|valid[ée]e?s?|fait|issue?s?|suite\s+[àa]|apr[eè]s|"
+                        r"au\s+moins|minimum|dont|y\s+compris|acquise?s?|obtenue?s?|already|completed|done|had|undertaken|gained|acquired|following|including|such\s+as|"
+                        r"previous|prior|past|former|relevant|significant|at\s+least|one\s+or\s+more|multiple|several|plusieurs|premi[eè]re?s?|minimum)"
+                        r"(?:\s+[\w’'()/-]+){0,4}?\s+" + _STG + r"\b(?:\s+(?:significatifs?|r[ée]ussis?|similaires?|pr[ée]c[ée]dents?|experience))?|"
+                        r"\b" + _STG + r"\s+(?:significatifs?|r[ée]ussis?|similaires?|pr[ée]c[ée]dents?|experience|exp[ée]riences?)\b|"
+                        r"lors\s+de\s+(?:vos|tes|ses|votre|ton)\s+stages?|au\s+cours\s+de\s+(?:vos|tes|votre|ton)\s+(?:stages?|[ée]tudes)|internships?\s*\(s\)|stage\(s\)|"
+                        r"anciens?\s+stagiaires|ex-stagiaires|former\s+interns|our\s+interns\b|nos\s+stagiaires\b|(?:accueill\w*|encadr\w*|form\w*|manag\w*|superv\w*)\s+(?:aussi\s+|[ée]galement\s+)?des\s+stagiaires\b|"
+                        r"(?:d[ée]couvr\w*|consult\w*|voir|explore|discover|view|see|browse)\s+(?:nos|toutes\s+nos|les|our|all)\s+(?:\w+\s+){0,2}(?:stages?|internships?|offres\s+de\s+stage)", re.I)
+POS_STAGE = re.compile(
+    r"conventions?\s+de\s+stage|"
+    r"\bstage\s+(?:de\s+|d['’]\s*une\s+dur[ée]e\s+de\s+|d['’]\s*)?(?:\d{1,2}|six|trois|quatre|cinq|douze)\s*(?:[àa-]\s*\d{1,2}\s*)?mois|"
+    r"\b(?:\d{1,2}|six|trois|quatre|cinq)\s*mois\s+de\s+stage|"
+    r"\bstage\s+(?:de\s+)?(?:fin\s+d['’]\s*[ée]tudes|c[ée]sure|pr[ée][- ]embauche|longue\s+dur[ée]e|off[- ]?cycle|d['’]\s*[ée]t[ée])|"
+    r"\bstage\s+(?:[àa]\s+pourvoir|bas[ée]|situ[ée]|localis[ée]|d[ée]butant|commen[çc]ant|d[ée]marrant|[àa]\s+partir|d[èe]s\s+(?:que|le|janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[ée]cembre))|"
+    r"(?:dur[ée]e|date\s+de\s+d[ée]but|d[ée]but|p[ée]riode|gratification|indemnit[ée])\s+du\s+stage|"
+    r"\b(?:ce|votre|ton|le|du|en)\s+stage\s+(?:d[ée]butera|commencera|d[ée]marrera|aura\s+lieu|se\s+d[ée]roulera|vous\s+permettra|te\s+permettra|s['’]adresse|est\s+(?:[àa]\s+pourvoir|bas[ée]|d['’]\s*une|de\s+\d|ouvert|propos[ée]))|"
+    r"\bce\s+stage\s+(?:est|vous|te|s['’]adresse|permet|offre|a\s+pour|consiste|d[ée]bute|commence|porte|se\s+d[ée]roule|sera|aura|n[ée]cessite|requiert|repr[ée]sente|constitue)|"
+    r"(?:seconde|deuxi[èe]me|premi[èe]re|1[èe]re|2[èe]me|2nde)\s+partie\s+de\s+(?:c[ée]sure|ann[ée]e\s+de\s+c[ée]sure)|\bc[ée]sure\s+ou\s+(?:de\s+|en\s+)?(?:stage\s+de\s+)?fin\s+d['’]\s*[ée]tudes|"
+    r"fin\s+d['’]\s*[ée]tudes\s+ou\s+(?:de\s+|en\s+)?c[ée]sure|(?:recherch\w*|recrut\w*)\s+(?:des|deux|trois|plusieurs)\s+(?:\w+\s+){0,1}?stagiaires\b|"
+    r"(?:recherch\w*|recrut\w*|rejoindre|accueill\w*|int[ée]grer)\s+(?:un|une|un\(e\)|un\.e|son|sa|notre)\s+(?:\w+\s+){0,2}?(?:futur\w*\s+)?stagiaire\b|"
+    r"(?:en\s+tant\s+que|comme|poste\s+de|position\s+de|statut\s+de|offre\s+de)\s+stagiaire|\bstagiaire\s+(?:analyste|au\s+sein|m&a|dans\s+l['’]\s*[ée]quipe)|"
+    r"dans\s+le\s+cadre\s+d['’]\s*(?:un|une|votre|ton)\s+(?:stage|c[ée]sure|ann[ée]e\s+de\s+c[ée]sure)|\bann[ée]e\s+de\s+c[ée]sure|\b(?:en|pour\s+une?|id[ée]al\w*\s+pour\s+une?)\s+c[ée]sure|gap[- ]year|"
+    r"\b(?:\d{1,2}|six|three|four|five|nine|twelve)[- ]?months?[- ](?:long\s+|duration\s+)?(?:internship|placement|off[- ]cycle|intern\b)|"
+    r"\binternship\s+(?:program(?:me)?\s+(?:is|will|starts|runs|lasts)|position|opportunity\s+(?:is|will|in|within|at)|role|period|duration|will|is\s+(?:a|an|for|based|open|available|\d)|starts|starting|start\s+date|lasts|of\s+\d|based|offers|runs)|"
+    r"\b(?:this|the)\s+(?:\w+\s+){0,2}?internship\s+(?:is|will|offers|provides|starts|program|programme|position|role|opportunity|runs|lasts)|"
+    r"\bas\s+an?\s+(?:\w+\s+){0,2}?intern\b|\b(?:the|an?)\s+(?:\w+\s+){0,1}?intern\s+will\b|\binterns?\s+will\s+(?:be|work|join|gain|support|assist|have)\b|"
+    r"\boff[- ]cycle\s+(?:internship|intern|analyst|program(?:me)?|position)|\bsummer\s+(?:internship|intern\b|analyst)|"
+    r"\b(?:pflicht)?praktikum\b|\bpraktikant|\bwerkstudent|\bworking\s+student|\btirocinio\b|\btirocinante|\bpr[aá]cticas\b|\bbecari[oa]\b|\bstagiair\b|\bafstudeerstage|"
+    r"\bindustrial\s+placement|\bplacement\s+year|\byear\s+in\s+industry|\b(?:spring|insight)\s+week|"
+    r"contrat\s+(?:d['’]\s*apprentissage|de\s+professionnalisation)|\b(?:poste|offre|contrat)\s+en\s+alternance|rythme\s+(?:d['’]\s*)?alternance|volontariat\s+international", re.I)
+NEG_TEXT = re.compile(r"(?:this|the)\s+(?:\w+\s+){0,2}?(?:is\s+)?(?:not|no)\s+(?:an?\s+)?internship|(?:ce|le)\s+(?:poste|contrat)\s+n['’]\s*est\s+pas\s+un\s+stage", re.I)
+
+
+def _kind(v):
+    v = (v or '').lower()
+    if re.search(r'cdi|cdd|permanent|regular|fixed|temporary|freelance|festanstellung|befristet|indefinido', v): return None
+    if re.search(r'apprenti|alternance|werkstudent|working', v): return 'Alternance'
+    if re.search(r'v\.?\s?i\.?\s?e|volontariat', v): return 'VIE'
+    return 'Stage'
+
+
+def stage_in_text(text):
+    """La description dit-elle clairement que le poste est un stage ? Renvoie le type ('Stage', 'Alternance', 'VIE') ou None."""
+    t = clean(text)[:15000]
+    if not t: return None
+    m = CONTRACT_FIELD.search(t)
+    if m: return _kind(m.group(1) or m.group(2))  # « Type de contrat : CDI » ou « Contract type: Internship » : la fiche le dit en toutes lettres
+    t2 = PAST_STAGE.sub(' ', t)
+    if NEG_TEXT.search(t2): return None
+    m = POS_STAGE.search(t2)
+    if not m: return 'VIE' if VIE_RE.search(t2) else None
+    w = m.group(0).lower()
+    if re.search(r'apprenti|alternance|professionnalisation|werkstudent|working student', w): return 'Alternance'
+    if 'volontariat' in w: return 'VIE'
+    return 'Stage'
+
+
+CAND_FILE = 'candidats.json'
+CAND_TEXT_MAX = 4000
+CAND_RETRY_DAYS = 7      # fiche illisible : nouvel essai après ce délai
+CAND_FORGET_DAYS = 45    # adresse plus vue depuis ce délai : oubliée
+CAND_BOOT_DAYS = 2       # offres vérifiées dans les 2 jours qui suivent la mise en route : déjà en ligne, pas « nouvelles »
+_CAND = {}
+CAND_PENDING = {}        # adresse -> (clé de lecture de la fiche, structure)
+
+
+def cand_db():
+    if not _CAND:
+        d = load(CAND_FILE) or {}
+        _CAND['since'] = d.get('since') or NOW.strftime('%Y-%m-%d')
+        _CAND['v'] = d.get('v') if isinstance(d.get('v'), dict) else {}
+        _CAND['dirty'] = not d
+    return _CAND
+
+
+def cand_ok(x, keep_unknown=False):
+    """Candidat gardé ? Description déjà là : décidé tout de suite. Sinon verdict en cache, ou fiche mise en file de lecture.
+    keep_unknown (passage lent) : un candidat pas encore vérifié voyage jusqu'à veille.py, qui lit la fiche."""
+    t = clean(x.get('title'))
+    if not x.get('url') or not cand_title(t): return False
+    desc = x.get('desc') or ''
+    if len(desc) >= 400:
+        k = stage_in_text(desc)
+        if k:
+            x['commit'] = k; x['cand'] = 1
+            return True
+        if len(desc) >= 1500 or not x.get('detail'): return False  # fiche complète déjà reçue : ce n'est pas un stage
+    db = cand_db(); key = x['url']; today = NOW.strftime('%Y-%m-%d')
+    e = db['v'].get(key)
+    if e:
+        if e.get('l') != today: e['l'] = today; db['dirty'] = True
+        if e.get('r') == 's':
+            x['commit'] = e.get('k') or 'Stage'; x['cand'] = 1
+            if e.get('t') and len(e['t']) > len(desc): x['desc'] = e['t']
+            if (e.get('f') or '') <= _boot_end(): x['cand_boot'] = 1
+            return True
+        if e.get('r') == 'n': return False
+        if e.get('r') == 'x' and (e.get('c') or '') > (NOW - dt.timedelta(days=CAND_RETRY_DAYS)).strftime('%Y-%m-%d'): return False
+    CAND_PENDING.setdefault(key, (list(x['detail']) if x.get('detail') else ['page', key], x.get('_cid') or ''))
+    return keep_unknown
+
+
+def _boot_end():
+    d = dt.date.fromisoformat(cand_db()['since']) + dt.timedelta(days=CAND_BOOT_DAYS)
+    return d.isoformat()
+
+
+def cand_check(key):
+    """Lit la fiche d'un candidat et garde le verdict ('s' stage, 'n' pas un stage, 'x' illisible). Renvoie le verdict."""
+    db = cand_db(); today = NOW.strftime('%Y-%m-%d')
+    dk, _cid = CAND_PENDING.get(key) or (['page', key], '')
+    e = db['v'].get(key) or {'f': today}
+    try:
+        txt = detail_text(dk[0], dk[1])[0]
+        k = stage_in_text(txt)
+        e.update(r='s' if k else 'n', c=today, l=today)
+        if k: e['k'] = k; e['t'] = clean(txt)[:CAND_TEXT_MAX]
+        else: e.pop('t', None); e.pop('k', None)
+    except Exception:
+        e.update(r='x', c=today, l=today)
+    db['v'][key] = e; db['dirty'] = True
+    CAND_PENDING.pop(key, None)
+    return e['r']
+
+
+def cand_save():
+    db = cand_db()
+    limit = (NOW - dt.timedelta(days=CAND_FORGET_DAYS)).strftime('%Y-%m-%d')
+    old = [k for k, e in db['v'].items() if (e.get('l') or '') < limit]
+    for k in old: db['v'].pop(k, None)
+    if db.get('dirty') or old:
+        save(CAND_FILE, {'since': db['since'], 'v': db['v']})
+        db['dirty'] = False
 
 
 def contract_of(t):
@@ -903,21 +1074,64 @@ class Partial(list):
     """Offres d'une lecture incomplète (une requête a échoué en route) : les absentes ne sont pas comptées comme fermées."""
     partial = True
 
+WD_FACET_MAX = int(os.environ.get('WD_FACET_MAX', '1000'))  # offres lues au plus par filtre « stage » de Workday
+# filtre de la plateforme dont la valeur désigne un stage (« Job Type : Intern (Paid) », « Worker Sub-Type : Stagiaire », « Apprentice »…)
+WD_INTERN_FACET = re.compile(r"\binterns?\b|internship|\bintern\s*\(|stagiai|\bstages?\b|trainee|praktik|werkstudent|working\s+student|apprenti|alternan|"
+                             r"\bstudents?\b|[ée]tudiant|summer|off[- ]?cycle|early\s+careers?|tirocin|pr[aá]cticas|becari|\bv\.?i\.?e\b|volontariat", re.I)
+WD_FACET_SKIP = re.compile(r"locat|country|state|city|region|site|office|area", re.I)
+
+
+def wd_intern_facets(js):
+    """[(paramètre, identifiant, libellé)] des valeurs de filtre Workday qui désignent un stage (hors filtres de lieu)."""
+    out = []
+
+    def walk(fs, param=None):
+        for f in fs or []:
+            p = f.get('facetParameter') or param
+            if not p or WD_FACET_SKIP.search(p): continue
+            for v in f.get('values') or []:
+                if v.get('facetParameter'): walk([v], p); continue
+                d = v.get('descriptor') or ''
+                if v.get('id') and WD_INTERN_FACET.search(d) and not re.search(r'\binternal|international', d, re.I): out.append((p, v['id'], d))
+    walk(js.get('facets'))
+    return out
+
+
 def j_workday(c, a):
     host, tenant, site = a
     base = f'https://{host}/wday/cxs/{tenant}/{site}'
     out, seen, okq, errs = [], set(), 0, 0
+
+    def add(posts, commit=''):
+        for p in posts:
+            path = p.get('externalPath') or ''
+            if not path or path in seen: continue
+            seen.add(path)
+            out.append({'title': p.get('title'), 'url': f'https://{host}/{site}{path}', 'location': p.get('locationsText') or '',
+                        'posted': posted_from_text(p.get('postedOn')), 'ext': path, 'detail': ('workday', base + path), 'commit': commit})
+    # 1. filtres « stage » de la plateforme : toutes les offres de stage, même celles dont l'intitulé ne dit pas « stage » (type de contrat connu)
+    facets = []
+    try:
+        js = post(base + '/jobs', {'appliedFacets': {}, 'limit': 20, 'offset': 0, 'searchText': ''}).json(); okq += 1
+        facets = wd_intern_facets(js)
+    except Exception:
+        pass  # filtres illisibles : la recherche par mots-clés ci-dessous suffit, la lecture n'est pas incomplète pour autant
+    for param, fid, label in facets:
+        total = None
+        for off in range(0, WD_FACET_MAX, 20):
+            try: js = post(base + '/jobs', {'appliedFacets': {param: [fid]}, 'limit': 20, 'offset': off, 'searchText': ''}).json(); okq += 1
+            except Exception: errs += 1; break
+            if off == 0: total = js.get('total')
+            posts = js.get('jobPostings') or []
+            add(posts, label if INTERN_COMMIT.search(label) else label + ' (stage)')  # « Students », « Early Careers » : type de contrat reconnu comme stage
+            if len(posts) < 20 or (total and off + 20 >= total): break
+    # 2. recherche par mots-clés (sites sans filtre de type de poste, intitulés explicites)
     for q in ['intern', 'stage', 'stagiaire', 'summer', 'analyst', 'off-cycle', 'trainee', 'praktikum', 'werkstudent', 'tirocinio', 'prácticas', 'alternance', 'graduate', 'VIE']:
         for off in range(0, 200, 20):
             try: js = post(base + '/jobs', {'appliedFacets': {}, 'limit': 20, 'offset': off, 'searchText': q}).json(); okq += 1
             except Exception: errs += 1; break
             posts = js.get('jobPostings') or []
-            for p in posts:
-                path = p.get('externalPath') or ''
-                if not path or path in seen: continue
-                seen.add(path)
-                out.append({'title': p.get('title'), 'url': f'https://{host}/{site}{path}', 'location': p.get('locationsText') or '',
-                            'posted': posted_from_text(p.get('postedOn')), 'ext': path, 'detail': ('workday', base + path)})
+            add(posts)
             if len(posts) < 20: break
     if not okq: raise RuntimeError('workday injoignable')
     return Partial(out) if errs else out
@@ -1006,7 +1220,7 @@ EIGHTFOLD_PAGES = 10
 def j_eightfold(c, slug):
     dom = host_of(site_of(c))
     out, seen, okq, errs = [], set(), 0, 0
-    for q in ['intern', 'stage', 'summer', 'analyst program']:
+    for q in ['intern', 'internship', 'stage', 'stagiaire', 'summer', 'off-cycle', 'analyst program']:
         start = 0
         for _ in range(EIGHTFOLD_PAGES):  # la plateforme peut renvoyer moins que « num » : on avance du nombre d'offres reçues
             try: js = get(f'https://{slug}.eightfold.ai/api/apply/v2/jobs', params={'domain': dom, 'start': start, 'num': 100, 'query': q}).json(); okq += 1
@@ -1029,44 +1243,77 @@ KW_SEARCH = ['intern', 'internship', 'stage', 'stagiaire', 'summer', 'analyst', 
 API_KW = ['intern', 'stage', 'stagiaire', 'summer', 'graduate', 'alternance', 'off-cycle', 'trainee']
 
 
+ORACLE_MAX = int(os.environ.get('ORACLE_MAX', '1000'))  # offres lues au plus par mot-clé
+ORACLE_BUDGET_S = float(os.environ.get('ORACLE_BUDGET_S', '45'))  # au-delà, plus de page suivante (lecture marquée partielle)
+
+
 def j_oracle(c, a):
+    """Recherche par mot-clé triée par pertinence (les intitulés qui contiennent le mot d'abord), pages suivantes tant qu'elles
+    contiennent des stages. Mesuré chez JPMorgan (« intern », 3 349 résultats) : tri par date, 7 stages dans les 200 premiers ;
+    tri par pertinence, tous dans les 600 premiers."""
+    import time as _t
     host, site = a
-    out, seen, okq, errs = [], set(), 0, 0
+    out, seen, okq, errs, cut, t0 = [], set(), 0, 0, False, _t.time()
     for q in KW_SEARCH:
-        u = (f'https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations'
-             f'&finder=findReqs;siteNumber={site},facetsList=LOCATIONS,limit=200,keyword=%22{quote(q)}%22,sortBy=POSTING_DATES_DESC')
-        try: js = get(u, headers={'Accept': 'application/json'}).json(); okq += 1
-        except Exception: errs += 1; continue
-        for it in js.get('items', []) or []:
-            for r in it.get('requisitionList', []) or []:
-                rid = str(r.get('Id') or '')
-                if not rid or rid in seen: continue
-                seen.add(rid)
-                out.append({'title': r.get('Title'), 'url': f'https://{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{rid}', 'location': r.get('PrimaryLocation') or '',
-                            'posted': iso(r.get('PostedDate')), 'ext': rid, 'desc': clean(r.get('ShortDescriptionStr') or ''), 'commit': r.get('JobSchedule') or '',
-                        'detail': ('oracle', f'{host}|{site}|{rid}')})
+        off, total = 0, None
+        cap = 200 if q in ('analyst', 'graduate') else ORACLE_MAX  # mots très larges (surtout des CDI) : une page, comme avant
+        while off < cap:
+            if off and _t.time() - t0 > ORACLE_BUDGET_S: cut = True; break
+            u = (f'https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations'
+                 f'&finder=findReqs;siteNumber={site},facetsList=LOCATIONS,limit=200,offset={off},keyword=%22{quote(q)}%22,sortBy=RELEVANCY')
+            try: js = get(u, headers={'Accept': 'application/json'}).json(); okq += 1
+            except Exception: errs += 1; break
+            got = hits = 0
+            for it in js.get('items', []) or []:
+                if total is None and isinstance(it.get('TotalJobsCount'), int): total = it['TotalJobsCount']
+                for r in it.get('requisitionList', []) or []:
+                    got += 1
+                    if is_intern(r.get('Title') or ''): hits += 1
+                    rid = str(r.get('Id') or '')
+                    if not rid or rid in seen: continue
+                    seen.add(rid)
+                    out.append({'title': r.get('Title'), 'url': f'https://{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{rid}', 'location': r.get('PrimaryLocation') or '',
+                                'posted': iso(r.get('PostedDate')), 'ext': rid, 'desc': clean(r.get('ShortDescriptionStr') or ''), 'commit': r.get('JobSchedule') or '',
+                                'detail': ('oracle', f'{host}|{site}|{rid}')})
+            off += got
+            # page sans aucun stage : la suite (moins pertinente) n'en a plus ; le site peut plafonner « limit » : on avance du nombre reçu
+            if not got or not hits or (total is not None and off >= total) or (total is None and got < 25): break
     if not okq: raise RuntimeError('oracle injoignable')
-    return Partial(out) if errs else out
+    return Partial(out) if (errs or cut) else out
+
+
+# Welcome to the Jungle : l'ancienne adresse /api/v1/organizations/<slug>/jobs répond 404 (vérifié le 20/11/2026, y compris pour des entreprises
+# qui ont des offres en ligne) ; le site lit désormais les offres d'une entreprise dans son index Algolia, filtré sur l'entreprise.
+WTTJ_ALGOLIA = ('https://csekhvms53-dsn.algolia.net/1/indexes/wttj_jobs_production_fr/query'
+                '?x-algolia-application-id=CSEKHVMS53&x-algolia-api-key=4bd8f6215d0cc52b26430765769e65a0')
+WTTJ_HDR = {'Referer': 'https://www.welcometothejungle.com/', 'Origin': 'https://www.welcometothejungle.com', 'Accept': 'application/json'}
+
+
+def _wttj_text(v):
+    if isinstance(v, list): return ' '.join(_wttj_text(x) for x in v)
+    if isinstance(v, dict): return ' '.join(_wttj_text(x) for x in v.values())
+    return str(v or '')
 
 
 def j_wttj(c, slug):
-    out, okq = [], 0
-    for page in range(1, 8):
-        r = S.get(f'https://api.welcometothejungle.com/api/v1/organizations/{slug}/jobs', params={'per_page': 100, 'page': page}, timeout=TIMEOUT,
-                  headers={'Accept': 'application/json', 'Referer': 'https://www.welcometothejungle.com/'})
-        r.raise_for_status(); js = r.json(); okq += 1
-        jobs = js.get('jobs') if isinstance(js, dict) else js
-        jobs = jobs or []
-        for j in jobs:
-            o = j.get('office') or {}
-            ct = j.get('contract_type') or ''
+    """Toutes les offres d'une entreprise sur Welcome to the Jungle (tous contrats : le tri « stage » se fait ensuite sur le type de contrat)."""
+    out = []
+    for page in range(10):
+        r = S.post(WTTJ_ALGOLIA, json={'query': '', 'hitsPerPage': 1000, 'page': page, 'facetFilters': [[f'organization.slug:{slug}']]}, headers=WTTJ_HDR, timeout=TIMEOUT)
+        r.raise_for_status(); js = r.json()
+        for h in js.get('hits') or []:
+            if not h.get('slug') or not h.get('name'): continue
+            o = (h.get('offices') or [{}])[0] or {}
+            ct = h.get('contract_type') or ''
             if isinstance(ct, dict): ct = ct.get('en') or ct.get('fr') or ''
-            out.append({'title': j.get('name') or j.get('title'), 'url': f"https://www.welcometothejungle.com/fr/companies/{slug}/jobs/{j.get('slug')}",
-                        'location': ', '.join(x for x in [o.get('city'), o.get('country') if isinstance(o.get('country'), str) else ''] if x),
-                        'posted': iso(j.get('published_at')), 'ext': j.get('slug') or str(j.get('id')), 'commit': str(ct),
-                        'desc': clean(j.get('description') or j.get('profile') or '')[:3000]})
-        if len(jobs) < 100: break
-    if not okq: raise RuntimeError('wttj injoignable')
+            months = h.get('contract_duration_maximum') or h.get('contract_duration_minimum')
+            x = {'title': h.get('name'), 'url': f"https://www.welcometothejungle.com/fr/companies/{slug}/jobs/{h['slug']}",
+                 'location': ', '.join(v for v in [o.get('city'), o.get('country') if isinstance(o.get('country'), str) else ''] if v),
+                 'posted': iso(h.get('published_at')), 'ext': h['slug'], 'commit': str(ct),
+                 'desc': clean(' '.join(_wttj_text(h.get(k)) for k in ('summary', 'key_missions', 'profile')) + (f' Durée {months} mois.' if months else ''))[:3000]}
+            if isinstance(months, int) and 0 < months <= 24: x['months'] = months
+            out.append(x)
+        if page + 1 >= (js.get('nbPages') or 0): break
     return out
 
 
@@ -1125,8 +1372,9 @@ CTA_TAIL = re.compile(r"(?:\s*[-–|·:>»→›]*\s*(?:read more|learn more|mor
                       r"mehr erfahren|mehr lesen|weiterlesen|jetzt bewerben|zur stelle|leer m[áa]s|ver oferta|scopri di pi[ùu]|leggi di pi[ùu]|candidati)\s*[>»→›]*\s*)+$", re.I)
 
 
-def page_jobs(c, htmltext, base, hosts=()):
-    """Liens d'offres de stage trouvés dans une page (HTML statique ou rendu par le navigateur)."""
+def page_jobs(c, htmltext, base, hosts=(), cand=False):
+    """Liens d'offres de stage trouvés dans une page (HTML statique ou rendu par le navigateur).
+    cand : garde aussi les fiches à intitulé finance junior sans mot de stage (« Analyste M&A – Juillet 2027 ») ; leur fiche tranchera."""
     out, seen = jsonld_jobs(htmltext, base), set()
     own_hosts = {host_of(base), host_of(site_of(c))} | {h for h in hosts if h}
     own_hosts = {h for h in own_hosts if h}
@@ -1142,11 +1390,85 @@ def page_jobs(c, htmltext, base, hosts=()):
         if not own and not (atsm and all(ats_ok(c, k, v) for k, v in atsm.items())) and not ATS_HOSTS.search(uh): continue
         pq = urlparse(u).path + '?' + urlparse(u).query
         if not (JOBLINK.search(pq) or atsm): continue
-        if not is_intern(t) and not (is_intern(urlparse(u).path.replace('-', ' ').replace('_', ' ')) and len(t) > 12): continue
+        if not is_intern(t) and not (is_intern(urlparse(u).path.replace('-', ' ').replace('_', ' ')) and len(t) > 12) and not (cand and cand_title(t)): continue
         if re.fullmatch(r'(postuler|apply|voir l.offre|en savoir plus|read more|learn more|d[ée]couvrir|view job|candidater|details?)', t, re.I): continue
         if not is_job_url(u): continue
         seen.add(u)
         out.append({'title': t, 'url': u, 'location': '', 'posted': None, 'ext': u, 'detail': ('page', u)})
+    return out
+
+
+HTML_PAGES = int(os.environ.get('HTML_PAGES', '8'))  # pages lues au plus par liste d'offres en HTML
+A_TAG = re.compile(r'<a\b([^>]*)>(.*?)</a>', re.I | re.S)
+NEXT_LABEL = re.compile(r"^(?:next|next\s+page|suivant|suivante|page\s+suivante|weiter|n[äa]chste(?:\s+seite)?|siguiente|successiva|volgende|[›»>→]|>>|&gt;|&raquo;|&rsaquo;)$", re.I)
+PAGE_PATH = re.compile(r'/page/(\d+)/?$', re.I)
+
+
+def _page_no(u):
+    """Numéro de page d'une adresse de liste (paramètre page / p / paged…, ou /page/N/) ; 1 sans indication."""
+    p = urlparse(u)
+    m = PAGE_PATH.search(p.path)
+    if m: return int(m.group(1))
+    for k, v in parse_qsl(p.query):
+        if k in PAGE_KEYS + ['paged'] and v.isdigit(): return int(v)
+    return 1
+
+
+def _same_list(a, b):
+    """Deux adresses de la même liste (même site, même chemin sans /page/N)."""
+    pa, pb = urlparse(a), urlparse(b)
+    return host_of(a) == host_of(b) and PAGE_PATH.sub('', pa.path).rstrip('/') == PAGE_PATH.sub('', pb.path).rstrip('/')
+
+
+def next_page_url(htmltext, base, seen=()):
+    """Adresse de la page suivante d'une liste d'offres : lien rel="next", bouton « Suivant » / « › », ou page n + 1 de la même liste."""
+    cur = _page_no(base)
+    m = re.search(r'<(?:link|a)\b[^>]*\brel\s*=\s*["\']?next\b[^>]*>', htmltext or '', re.I)
+    if m:
+        h = re.search(r'href\s*=\s*["\']([^"\']+)', m.group(0), re.I)
+        if h:
+            u = urljoin(base, html.unescape(h.group(1)))
+            if u.startswith('http') and u not in seen and host_of(u) == host_of(base): return u
+    numbered = None
+    for attrs, inner in A_TAG.findall(htmltext or ''):
+        h = re.search(r'href\s*=\s*["\']([^"\'#][^"\']*)', attrs, re.I)
+        if not h or h.group(1).lower().startswith(('javascript', 'mailto')): continue
+        u = urljoin(base, html.unescape(h.group(1)))
+        if not u.startswith('http') or u in seen or u == base or host_of(u) != host_of(base): continue
+        lab = clean(inner) or clean((re.search(r'(?:aria-label|title)\s*=\s*["\']([^"\']+)', attrs, re.I) or [None, ''])[1])
+        aria = clean((re.search(r'aria-label\s*=\s*["\']([^"\']+)', attrs, re.I) or [None, ''])[1])
+        if (NEXT_LABEL.match(lab) or re.match(r'^(?:next|suivant|page suivante|next page)\b', aria, re.I)) and _same_list(u, base) and _page_no(u) > cur: return u
+        if numbered is None and _same_list(u, base) and _page_no(u) == cur + 1: numbered = u
+    return numbered
+
+
+def joblink_set(htmltext, base):
+    """Adresses des liens qui ressemblent à des fiches d'offres (pour voir si une page suivante apporte du nouveau)."""
+    out = set()
+    for href, txt in A_RE.findall(htmltext or ''):
+        u = urljoin(base, html.unescape(href.strip()))
+        if u.startswith('http') and (JOBLINK.search(urlparse(u).path + '?' + urlparse(u).query) or detect_ats(u)) and is_job_url(u): out.add(u)
+    return out
+
+
+def html_pages(c, url, max_pages=None):
+    """Liste d'offres d'un site en HTML, pages suivantes comprises. Une page suivante en panne : lecture partielle (rien n'est fermé)."""
+    r = get(url)
+    out = list(page_jobs(c, r.text, r.url, cand=True))
+    keys, seen, links = {x['url'] for x in out}, {url, r.url}, joblink_set(r.text, r.url)
+    h, base = r.text, r.url
+    for _ in range((max_pages or HTML_PAGES) - 1):
+        nu = next_page_url(h, base, seen)
+        if not nu: break
+        seen.add(nu)
+        try: r = get(nu)
+        except Exception: return Partial(out)
+        nl = joblink_set(r.text, r.url)
+        if not nl or nl <= links: break  # page vide, ou le site ignore le numéro de page
+        links |= nl
+        for x in page_jobs(c, r.text, r.url, cand=True):
+            if x['url'] not in keys: keys.add(x['url']); out.append(x)
+        h, base = r.text, r.url
     return out
 
 
@@ -1490,6 +1812,9 @@ def items_from(js, rec, base):
     return out
 
 
+API_KW_PAGES = int(os.environ.get('API_KW_PAGES', '10'))  # pages lues par mot-clé (s'arrête dès qu'une page n'apporte rien)
+
+
 def fetch_api(c, rec, max_pages=None):
     """Lit une API cachée découverte sur le site : recherche par mots-clés « stage » si l'API en accepte, sinon toutes les pages."""
     spec = rec['req']; base = rec.get('base') or spec['url']
@@ -1523,7 +1848,7 @@ def fetch_api(c, rec, max_pages=None):
     if kw:
         firsts = []
         for q in API_KW:
-            firsts.append(run(set_param(spec, kw, q), max_pages or 3))
+            firsts.append(run(set_param(spec, kw, q), max_pages or API_KW_PAGES))
             # le site ignore le mot-clé (mêmes résultats pour deux mots différents) : on lit tout
             if len(firsts) == 2 and firsts[0] and firsts[0] == firsts[1]:
                 run(spec, max_pages or 30); break
@@ -1546,7 +1871,8 @@ def detail_text(kind, url):
         it = (js.get('items') or [{}])[0]
         txt = clean(' '.join(it.get(k) or '' for k in ('ExternalDescriptionStr', 'ExternalResponsibilitiesStr', 'ExternalQualificationsStr', 'ShortDescriptionStr')))
         end = str(it.get('ExternalPostedEndDate') or '')[:10] or None
-        return txt + ' ' + (it.get('ContractType') or '') + ' ' + (it.get('JobSchedule') or ''), end, it.get('PrimaryLocation') or '', None
+        ct = it.get('ContractType') or ''
+        return txt + (' . Contract type: ' + ct if ct else '') + ' ' + (it.get('JobSchedule') or ''), end, it.get('PrimaryLocation') or '', None
     if kind == 'workday':
         js = get(url).json().get('jobPostingInfo', {})
         return clean(js.get('jobDescription')) + ' ' + (js.get('timeType') or ''), None, js.get('location') or '', iso(js.get('startDate'))
@@ -1587,7 +1913,8 @@ def detail_text(kind, url):
     if lds:
         l = lds[0]
         sl = _start_line(clean(re.sub(r'(?is)<(script|style)[^>]*>.*?</\1>', ' ', h))) if l['desc'] and not START_KW.search(l['desc']) else ''  # date de début affichée hors du JSON-LD
-        return (l['desc'] or clean(h)[:6000]) + ' ' + l.get('commit', '') + ' ' + sl + hidden, l.get('deadline'), l.get('location', ''), l.get('posted')
+        com = l.get('commit', '')
+        return (l['desc'] or clean(h)[:6000]) + (' . Employment type: ' + com if com else '') + ' ' + sl + hidden, l.get('deadline'), l.get('location', ''), l.get('posted')
     body = clean(re.sub(r'(?is)<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ', h))[:8000]
     if bad_page(body): raise RuntimeError('page de blocage ou de maintenance au lieu de la fiche')  # relue plus tard, jamais gardée comme texte
     return body + hidden, None, '', None

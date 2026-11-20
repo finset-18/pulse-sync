@@ -134,10 +134,10 @@ def main():
         c = byid.get(cid)
         if c is None: continue
         info['raw_n'] = Counter(x.get('src') for x in raw)
-        kept = veille.filter_raw(c, cid, raw, ann_keys)
+        kept = veille.filter_raw(c, cid, raw, ann_keys, keep_cands=True)
         n_in += len(raw); n_out += len(kept)
         res_out[cid] = [slim(kept, by_url), info]
-    ren_out = {cid: [[slim(veille.filter_raw(byid[cid], cid, g, ann_keys) if e is None else g, by_url), e] for g, e in lst] for cid, lst in render.items() if cid in byid}
+    ren_out = {cid: [[slim(veille.filter_raw(byid[cid], cid, g, ann_keys, keep_cands=True) if e is None else g, by_url), e] for g, e in lst] for cid, lst in render.items() if cid in byid}
 
     dom = load('domaines.json') or {}
     doc = {'updated': NOW_ISO, 'seconds': round(time.time() - T0), 'errors': errors, 'structs': hs + pseudo, 'results': res_out, 'render': ren_out,
