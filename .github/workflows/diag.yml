@@ -7,6 +7,14 @@ on:
       per_host:
         description: "Fiches testées par site"
         default: "15"
+      mode:
+        description: "acces = lecture des fiches ; sources = essai des sources (recettes dédiées, Welcome to the Jungle, LinkedIn à blanc)"
+        type: choice
+        options: [acces, sources]
+        default: acces
+      ids:
+        description: "mode sources : structures à essayer, séparées par des virgules (vide = toutes)"
+        default: ""
 
 permissions:
   contents: read
@@ -30,8 +38,13 @@ jobs:
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           DIAG_PER_HOST: ${{ inputs.per_host }}
+          MODE: ${{ inputs.mode }}
+          ESSAI_IDS: ${{ inputs.ids }}
+          SHARD: "0"
+          SHARDS: "12"
         run: |
-          s=0; python scripts/diag_acces.py > run.log 2>&1 || s=$?
-          grep '^diag' run.log | cut -c1-400 || true
+          s=0
+          if [ "$MODE" = "sources" ]; then python scripts/essai.py > run.log 2>&1 || s=$?; else python scripts/diag_acces.py > run.log 2>&1 || s=$?; fi
+          grep -E '^(diag|essai|wttj|linkedin lot)' run.log | cut -c1-400 || true
           [ $s -eq 0 ] || grep -E '^(Traceback|  File |[A-Za-z]+(Error|Exception))' run.log | tail -n 12 | cut -c1-200
           exit $s

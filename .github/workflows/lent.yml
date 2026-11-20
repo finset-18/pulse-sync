@@ -4,7 +4,7 @@ name: lent
 # Il ne touche pas aux offres : il écrit data/lent.json, que le job sync reprend à son passage suivant.
 on:
   schedule:
-    - cron: "17,47 * * * *"   # deux fois par heure : le tour complet des agrégateurs (670 recherches, 120 par passage) passe de 6 h à 3 h
+    - cron: "17,47 * * * *"   # deux fois par heure : le tour complet des agrégateurs (810 recherches, 150 par passage) dure environ 3 h
   workflow_dispatch:
 
 permissions:
@@ -44,7 +44,7 @@ jobs:
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           WORKERS: "48"
-          AGG_PER_PASS: "120"
+          AGG_PER_PASS: "150"
           FT_CLIENT_ID: ${{ secrets.FT_CLIENT_ID }}
           FT_CLIENT_SECRET: ${{ secrets.FT_CLIENT_SECRET }}
         run: |
