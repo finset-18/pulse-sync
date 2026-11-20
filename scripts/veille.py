@@ -907,6 +907,12 @@ def main():
             if not prev and direct:
                 prev = url_idx.get(direct)
                 if prev and prev.get('via') not in AGG: continue  # déjà lue sur le site de l'entreprise : l'agrégateur n'apporte rien
+            if prev and prev['company_id'] != cid and is_hl(prev['company_id']) and not is_hl(cid):
+                # offre rangée jusqu'ici sous une société hors liste (« Forvis Mazars en France ») alors que la maison est dans la liste :
+                # elle passe sous la structure de la liste, avec le même identifiant (les marques posées sur le site restent)
+                prev.update(company_id=cid, company=c['name'], fam=c.get('fam', ''), site=official_site(c) or prev.get('site'))
+                try: classify(prev, prev.get('excerpt') or '')
+                except Exception: pass
             if prev and prev['company_id'] != cid: continue
             if not prev and x.get('src') in AGG and _norm(x['title']) + '|' + country_of(x.get('location') or '') in own_titles: continue
             if not prev and past_title(x['title']): continue  # jamais enregistrée : elle serait fermée aussitôt, à chaque retour
