@@ -1117,18 +1117,24 @@ def j_workday(c, a):
         facets = wd_intern_facets(js)
     except Exception:
         pass  # filtres illisibles : la recherche par mots-clés ci-dessous suffit, la lecture n'est pas incomplète pour autant
+    facet_err = 0
     for param, fid, label in facets:
         total = None
         for off in range(0, WD_FACET_MAX, 20):
             try: js = post(base + '/jobs', {'appliedFacets': {param: [fid]}, 'limit': 20, 'offset': off, 'searchText': ''}).json(); okq += 1
-            except Exception: errs += 1; break
+            except Exception: errs += 1; facet_err += 1; break
             if off == 0: total = js.get('total')
             posts = js.get('jobPostings') or []
             add(posts, label if INTERN_COMMIT.search(label) else label + ' (stage)')  # « Students », « Early Careers » : type de contrat reconnu comme stage
             if len(posts) < 20 or (total and off + 20 >= total): break
-    # 2. recherche par mots-clés (sites sans filtre de type de poste, intitulés explicites)
-    for q in ['intern', 'stage', 'stagiaire', 'summer', 'analyst', 'off-cycle', 'trainee', 'praktikum', 'werkstudent', 'tirocinio', 'prácticas', 'alternance', 'graduate', 'VIE']:
-        for off in range(0, 200, 20):
+    # 2. recherche par mots-clés (sites sans filtre de type de poste, intitulés explicites). Quand les filtres « stage » ont tout rendu,
+    #    les stages sont déjà là : six mots-clés et trois pages suffisent pour le reste (programmes, intitulés sans type de contrat).
+    #    Workday ralentit ou refuse les serveurs qui envoient trop de requêtes (mesuré le 20/11/2026 : lectures partielles depuis GitHub).
+    full = bool(facets) and not facet_err
+    kws = ['intern', 'stage', 'summer', 'off-cycle', 'analyst', 'graduate'] if full else \
+          ['intern', 'stage', 'stagiaire', 'summer', 'analyst', 'off-cycle', 'trainee', 'praktikum', 'werkstudent', 'tirocinio', 'prácticas', 'alternance', 'graduate', 'VIE']
+    for q in kws:
+        for off in range(0, 60 if full else 200, 20):
             try: js = post(base + '/jobs', {'appliedFacets': {}, 'limit': 20, 'offset': off, 'searchText': q}).json(); okq += 1
             except Exception: errs += 1; break
             posts = js.get('jobPostings') or []
