@@ -23,7 +23,7 @@ BUDGET = int(os.environ.get('COMPTES_BUDGET_S', '4200'))
 TRACKR = 'https://api.the-trackr.com/programmes'
 SIMPLIFY = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json'
 TAL_RE = re.compile(r'https?://([\w-]+)\.tal\.net', re.I)
-GUESS = ('greenhouse', 'lever', 'ashby', 'smartrecruiters', 'recruitee', 'personio', 'workable', 'pinpoint', 'bamboohr')
+GUESS = ('greenhouse', 'lever', 'ashby', 'smartrecruiters', 'recruitee', 'personio', 'workable', 'pinpoint', 'bamboohr', 'teamtailor')
 T0 = time.time()
 
 

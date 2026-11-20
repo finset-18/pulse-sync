@@ -19,7 +19,12 @@ FAST = ('ats', 'api', 'html', 'wttj')
 HL_TITLE = re.compile(r"financ|m&a|merger|fusion|acquisition|private equity|capital[- ]invest|venture|\blbo\b|invest|asset|wealth|patrimoin|"
                       r"\bfunds?\b|fonds|banking|banque|corporate finance|transaction|valuation|[ée]valuation|credit|cr[ée]dit|equity|debt|dette|"
                       r"trading|trader|markets\b|march[ée]s financiers|quant|treasury|tr[ée]sorerie|actuar|\brisk|risque|"
-                      r"fixed income|restructur|leverag|securiti[sz]|titrisation|derivativ|d[ée]riv[ée]s", re.I)
+                      r"fixed income|restructur|leverag|securiti[sz]|titrisation|derivativ|d[ée]riv[ée]s|due diligence|deal advisory|corporate dev|"
+                      # audit externe (commissariat aux comptes) : cœur de cible, y compris dans les cabinets hors liste ; l'audit interne, qualité, SI… reste écarté
+                      r"commissariat aux comptes|\bcac\b|statutory audit|external audit|audit l[ée]gal|audit\s*(?:&|and|et)\s*assurance|"
+                      r"(?<!internal )(?<!interne )\baudit(?:eur|rice|eur\(rice\)|eur\.rice|or)?s?\s+(?:l[ée]gal|externe|comptable|junior|d[ée]butant\w*|stagiaire|assistant\w*|intern\b|internship|trainee|associate)|"
+                      r"(?:stagiaire|stage|assistant\w*|junior|d[ée]butant\w*|intern|internship|trainee)\s+(?:en\s+|d['’]\s*|-\s*)?audit(?:eur|rice|eur\(rice\)|or)?s?\b"
+                      r"(?!\s*(?:interne|internal|qualit|it\b|si\b|des\s+si|syst|[ée]nerg|s[ée]curit|social|cyber|rse|informatique|tech|data|digital))", re.I)
 LEGAL = re.compile(r"\b(sas|sasu|sa|sarl|sca|snc|ltd|limited|llp|plc|gmbh|ag|inc|llc|lp|nv|bv|se|s\.a\.?|group|groupe|holding|france|uk|europe|international)\b\.?", re.I)
 
 
@@ -111,10 +116,22 @@ def name_index(structs):
     return idx
 
 
+# Nom d'entité locale d'un groupe tel que LinkedIn, Indeed ou Welcome to the Jungle l'écrivent : « Forvis Mazars en France »,
+# « PwC Deutschland », « BDO Global », « PwC France et Maghreb ». Sans cette règle, ces annonces partaient en sociétés hors liste
+# alors que la maison est dans la liste. Le nom exact reste essayé d'abord (« Baker Tilly Belgique » garde sa propre structure).
+GEO = re.compile(r"(?:\b(?:en|in|et|and|&)\s+)?\b(?:france|maghreb|deutschland|germany|allemagne|luxembourg|switzerland|suisse|schweiz|belgium|belgique|"
+                 r"netherlands|nederland|pays[- ]bas|italia|italy|italie|espa[ñn]a|spain|espagne|ireland|irlande|monaco|united kingdom|uk|"
+                 r"nordics?|dach|emea|europe|global|worldwide|international)\b", re.I)
+
+
 def match_name(name, idx):
     for k in sorted(name_keys(name), key=len, reverse=True):
         if k in idx:
             return idx[k]
+    base = LEGAL.sub(' ', GEO.sub(' ', re.sub(r'\(.*?\)', ' ', name or '')))
+    k = _norm(base)
+    if len(k) >= 3 and k != _norm(name or '') and k in idx:
+        return idx[k]
     return None
 
 

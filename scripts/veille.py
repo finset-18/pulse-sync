@@ -373,6 +373,32 @@ async def render_all(items, budget=None):
     return res
 
 
+# cœur de cible : familles de structures et métiers suivis de près (bilan dans meta.json, pour mesurer chaque amélioration)
+CIBLE_FAMS = {'M&A (boutiques FR)': ('bfr',), 'M&A (banques d\'affaires)': ('eb',), 'Private equity small-cap': ('pesmall',), 'Private equity mid-cap': ('pemid',),
+              'Private equity large-cap': ('pelarge',), 'Venture capital': ('vc',), 'Transaction services / audit': ('ts',)}
+CIBLE_METIERS = ('M&A', 'Private Equity', 'Venture Capital', 'Transaction Services / Évaluation', 'Audit')
+LUE = ('ats', 'api', 'html', 'render', 'wttj', 'sitemap')
+
+
+def couverture(structs, recettes, offers):
+    """Par famille cible : structures, structures lues par une vraie méthode, structures avec une offre ouverte, offres ouvertes.
+    Par métier cible : offres ouvertes, dont celles de sociétés hors liste."""
+    by = Counter()
+    for o in offers:
+        if o.get('status') == 'open' and not o.get('dup_of'): by[o['company_id']] += 1
+    fams = {}
+    for label, fs in CIBLE_FAMS.items():
+        ss = [c for c in structs if c.get('fam') in fs and not is_hl(c['id'])]
+        lues = sum(1 for c in ss if any(m.get('m') in LUE for m in (recettes.get(c['id']) or {}).get('methods') or []))
+        fams[label] = {'structures': len(ss), 'lues': lues, 'avec_offre': sum(1 for c in ss if by[c['id']]), 'offres': sum(by[c['id']] for c in ss)}
+    metiers = {}
+    for o in offers:
+        if o.get('status') != 'open' or o.get('dup_of') or o.get('metier') not in CIBLE_METIERS: continue
+        d = metiers.setdefault(o['metier'], {'offres': 0, 'hors_liste': 0, 'france': 0})
+        d['offres'] += 1; d['hors_liste'] += is_hl(o['company_id']); d['france'] += o.get('country') == 'France'
+    return {'familles': fams, 'metiers': metiers, 'total_cible': sum(d['offres'] for d in metiers.values())}
+
+
 def load_offers():
     """offers.json illisible (conflit git, fichier tronqué) : on s'arrête au lieu de repartir de zéro et d'effacer les offres captées."""
     p = os.path.join(DATA, 'offers.json')
@@ -881,6 +907,12 @@ def main():
             if not prev and direct:
                 prev = url_idx.get(direct)
                 if prev and prev.get('via') not in AGG: continue  # déjà lue sur le site de l'entreprise : l'agrégateur n'apporte rien
+            if prev and prev['company_id'] != cid and is_hl(prev['company_id']) and not is_hl(cid):
+                # offre rangée jusqu'ici sous une société hors liste (« Forvis Mazars en France ») alors que la maison est dans la liste :
+                # elle passe sous la structure de la liste, avec le même identifiant (les marques posées sur le site restent)
+                prev.update(company_id=cid, company=c['name'], fam=c.get('fam', ''), site=official_site(c) or prev.get('site'))
+                try: classify(prev, prev.get('excerpt') or '')
+                except Exception: pass
             if prev and prev['company_id'] != cid: continue
             if not prev and x.get('src') in AGG and _norm(x['title']) + '|' + country_of(x.get('location') or '') in own_titles: continue
             if not prev and past_title(x['title']): continue  # jamais enregistrée : elle serait fermée aussitôt, à chaque retour
@@ -920,8 +952,8 @@ def main():
             if x.get('detail') and len(x.get('desc') or '') < 600: o['dk'] = list(x['detail'])
             elif x.get('url') and not x.get('desc') and o['via'] in ('api', 'render', 'html', 'page', 'watch'): o['dk'] = ['page', x['url']]
             if (x.get('src') or info['via']) in fresh_src and (not x.get('posted') or x.get('src') in PLUS): o['initial'] = True
-            # Welcome to the Jungle relu après la panne de l'ancienne adresse : une offre publiée il y a plus de 14 jours était déjà en ligne, pas « nouvelle »
-            if x.get('src') == 'wttj' and str(x.get('posted') or '9999') < (NOW - dt.timedelta(days=14)).strftime('%Y-%m-%d'): o['initial'] = True
+            # Welcome to the Jungle (lecture d'une entreprise ou balayage complet du site) : une offre publiée il y a plus de 14 jours était déjà en ligne, pas « nouvelle »
+            if x.get('src') in ('wttj', 'wttj_search') and str(x.get('posted') or '9999') < (NOW - dt.timedelta(days=14)).strftime('%Y-%m-%d'): o['initial'] = True
             if x.get('cand'):  # intitulé sans mot de stage, reconnu comme stage par sa fiche
                 o['cand'] = 1
                 if x.get('cand_boot'): o['initial'] = True  # vérifiée à la mise en route : déjà en ligne avant, pas « nouvelle »
@@ -1208,6 +1240,8 @@ def main():
             'new_this_run': sum(1 for i in new_ids if i in offers and not offers[i].get('initial')),
             'initial_this_run': sum(1 for i in new_ids if i in offers and offers[i].get('initial')), 'closed_this_run': closed_now,
             'failed': failed, 'hors_liste_open': sum(1 for o in out if o['status'] == 'open' and is_hl(o['company_id']) and not o.get('dup_of')), 'extra': EXTRA, 'tracked': tracked}
+    try: meta['couverture'] = couverture(structs, recettes, out)
+    except Exception as e: err('bilan de couverture', e)
     try: meta['dates'] = dates_stats(out)
     except Exception as e: err('bilan des dates', e)
     scanned = meta['companies_scanned'] or 1

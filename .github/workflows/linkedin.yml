@@ -1,7 +1,7 @@
 name: linkedin
 
 # LinkedIn en profondeur : stages publiés depuis une semaine, par métier et par pays, liste seule (scripts/linkedin.py).
-# Huit lots en parallèle, un serveur chacun : LinkedIn limite chaque serveur après 7 à 19 requêtes (mesuré le 10 novembre 2026),
+# Douze lots en parallèle, un serveur chacun : LinkedIn limite chaque serveur après 7 à 19 requêtes (mesuré le 10 novembre 2026),
 # donc on avance plus vite avec plus de serveurs qu'avec plus de requêtes par serveur. Chaque lot écrit data/lent_li_<lot>.json dans le dépôt de données ;
 # le job sync le reprend à son passage suivant (veille.consume_extra). Il ne touche pas aux offres lui-même :
 # s'il tombe en panne ou si LinkedIn le limite, rien d'autre n'est affecté. Le journal ne montre que des comptes.
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     concurrency:
       group: linkedin-${{ matrix.shard }}
       cancel-in-progress: false
@@ -44,7 +44,7 @@ jobs:
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           SHARD: ${{ matrix.shard }}
-          SHARDS: "8"
+          SHARDS: "12"
         run: |
           python scripts/linkedin.py > run.log 2>&1 || { tail -n 8 run.log | cut -c1-300; exit 1; }
           grep -E '^linkedin lot' run.log | cut -c1-400
@@ -58,8 +58,8 @@ jobs:
           git add "$f"
           git diff --cached --quiet && exit 0
           git commit -q -m "linkedin ${{ matrix.shard }} $(date -u +'%Y-%m-%d %H:%M')"
-          # Les 8 lots finissent souvent dans la même minute et poussent sur le même dépôt (avec sync en plus) :
+          # Les 12 lots finissent souvent dans la même minute et poussent sur le même dépôt (avec sync en plus) :
           # départ décalé par lot + attente aléatoire, sinon ils se rejettent en boucle au même rythme.
-          sleep $(( ${{ matrix.shard }} * 6 + RANDOM % 6 ))
+          sleep $(( ${{ matrix.shard }} * 5 + RANDOM % 5 ))
           for i in 1 2 3 4 5 6 7 8; do git pull -q --rebase --autostash -X theirs && git push -q && exit 0; sleep $(( 5 + RANDOM % (i * 8) )); done
           exit 1

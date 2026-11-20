@@ -3,7 +3,8 @@
 LinkedIn en profondeur (workflow linkedin.yml) : les boutiques et petits fonds publient leurs stages sur LinkedIn bien plus
 souvent que sur leur site. Le passage lent n'y lit que 20 annonces par recherche, dans 8 villes (il ouvre chaque fiche).
 Ici : liste seule, sans ouvrir de fiche, donc beaucoup plus large et plus profond. Stages publiés depuis une semaine,
-par métier et par pays, jusqu'à PAGES pages de 10 annonces par recherche.
+par métier, par ville et par pays, jusqu'à PAGES pages de 10 annonces par recherche. Le cœur de cible (M&A, private equity,
+venture capital, transaction services, audit) passe en priorité : trois recherches sur quatre.
 
 Les annonces suivent ensuite le chemin habituel : rattachement à la structure de la liste ou société hors liste
 (agregateurs.attach, mêmes filtres), puis veille.py lit la fiche des offres nouvelles (dates, durée).
@@ -12,7 +13,7 @@ Plusieurs lots tournent en parallèle (un serveur chacun) ; un lot s'arrête dè
 et reprend à la recherche suivante au passage d'après. Essai mesuré (une recherche par nom de structure) : écarté,
 la recherche publique renvoie surtout des homonymes.
 Le journal (dépôt public) ne montre que des comptes.
-Usage : SHARD=0 SHARDS=6 python scripts/linkedin.py        (essai sans écrire : LI_DRY=1)
+Usage : SHARD=0 SHARDS=12 python scripts/linkedin.py        (essai sans écrire : LI_DRY=1)
 """
 import html as _html, json, os, random, re, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,6 +23,7 @@ from commun import load, save, NOW_ISO, UA, clean, iso
 SHARD, SHARDS = int(os.environ.get('SHARD', '0')), max(1, int(os.environ.get('SHARDS', '1')))
 MAX_Q = int(os.environ.get('LI_MAX_Q', '40'))          # recherches par passage et par lot
 BUDGET_S = float(os.environ.get('LI_BUDGET_S', '600'))
+PLAN_V = 2  # version du plan de recherches : à chaque changement, les positions repartent de zéro
 PAUSE = (float(os.environ.get('LI_PAUSE_MIN', '2.5')), float(os.environ.get('LI_PAUSE_MAX', '5')))
 URL = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
 S = requests.Session()
@@ -53,15 +55,42 @@ def cards(htmltext):
     return out
 
 
-FR = ['stage M&A', 'stage fusions acquisitions', 'stage private equity', 'stage capital investissement', 'stage venture capital', 'stage corporate finance',
-      'stage transaction services', 'stage audit financier', 'stage asset management', 'stage analyste financier', "stage banque d'investissement",
-      'stage finance de marché', 'stage dette privée', 'stage financement structuré', 'stage financement de projets', 'stage gestion de patrimoine',
-      'stage family office', 'stage investissement immobilier', 'stage infrastructure', 'stage restructuring', 'stage equity research', 'stage trésorerie',
-      'stage analyste crédit', 'stage contrôle de gestion', 'stagiaire analyste', 'césure finance', 'off-cycle analyst', 'stage evaluation financière']
-EN = ['investment banking intern', 'private equity intern', 'M&A intern', 'off-cycle internship', 'venture capital intern', 'asset management intern']
-EN_ZONES = ['United Kingdom', 'Luxembourg', 'Switzerland', 'Germany', 'Netherlands', 'Belgium', 'Spain', 'Italy', 'Ireland']
-QUERIES = [(q, 'France') for q in FR] + [(q, z) for z in EN_ZONES for q in EN]
+# Cœur de cible (M&A, private equity, venture capital, transaction services, audit) : trois recherches sur quatre à chaque passage,
+# en France entière puis ville par ville (une recherche France ne rend que les 50 annonces les plus récentes de la semaine),
+# et dans les pays voisins. Le reste de la finance garde une recherche sur quatre.
+T_FR = ['stage M&A', 'stage fusions acquisitions', 'stage private equity', 'stage capital investissement', 'stage venture capital',
+        'stage transaction services', 'stage audit', 'stage auditeur financier', 'stage commissariat aux comptes', 'stage corporate finance',
+        'stage due diligence', 'stage LBO', 'stage analyste investissement', 'stage capital développement', 'stage analyste M&A',
+        "stage banque d'investissement", 'stage evaluation financière', 'stagiaire analyste', 'césure finance', 'off-cycle analyst']
+T_CITY_Q = ['stage M&A', 'stage private equity', 'stage venture capital', 'stage transaction services', 'stage audit', 'stage corporate finance']
+T_CITIES = ['Paris, Île-de-France, France', 'Lyon, Auvergne-Rhône-Alpes, France', 'Lille, Hauts-de-France, France', 'Bordeaux, Nouvelle-Aquitaine, France',
+            'Nantes, Pays de la Loire, France', 'Marseille, Provence-Alpes-Côte d\'Azur, France', 'Toulouse, Occitanie, France']
+T_EN = ['M&A intern', 'private equity intern', 'venture capital intern', 'transaction services intern', 'audit intern', 'investment banking intern', 'off-cycle internship']
+T_ZONES = ['United Kingdom', 'Luxembourg', 'Switzerland', 'Belgium', 'Monaco']
+O_FR = ['stage asset management', 'stage analyste financier', 'stage finance de marché', 'stage dette privée', 'stage financement structuré',
+        'stage financement de projets', 'stage gestion de patrimoine', 'stage family office', 'stage investissement immobilier', 'stage infrastructure',
+        'stage restructuring', 'stage equity research', 'stage trésorerie', 'stage analyste crédit', 'stage contrôle de gestion']
+O_EN = ['investment banking intern', 'private equity intern', 'M&A intern', 'off-cycle internship', 'venture capital intern', 'asset management intern']
+O_ZONES = ['Germany', 'Netherlands', 'Spain', 'Italy', 'Ireland']
+TARGETS = [(q, 'France') for q in T_FR] + [(q, c) for c in T_CITIES for q in T_CITY_Q] + [(q, z) for z in T_ZONES for q in T_EN]
+OTHERS = [(q, 'France') for q in O_FR] + [(q, z) for z in O_ZONES for q in O_EN] + [('asset management intern', z) for z in T_ZONES]
+QUERIES = TARGETS + OTHERS
 PAGES = int(os.environ.get('LI_PAGES', '5'))
+
+
+def plan(shard, shards, pos_t, pos_o, max_q):
+    """Recherches de ce lot pour ce passage : trois « cœur de cible » pour une autre, chacune reprise là où le passage précédent s'est arrêté.
+    Renvoie [(recherche, 't' ou 'o')]."""
+    mt = [x for i, x in enumerate(TARGETS) if i % shards == shard]
+    mo = [x for i, x in enumerate(OTHERS) if i % shards == shard]
+    mt = mt[pos_t % len(mt):] + mt[:pos_t % len(mt)] if mt else []
+    mo = mo[pos_o % len(mo):] + mo[:pos_o % len(mo)] if mo else []
+    out, it, io = [], 0, 0
+    while len(out) < max_q and (it < len(mt) or io < len(mo)):
+        for _ in range(3):
+            if it < len(mt) and len(out) < max_q: out.append((mt[it], 't')); it += 1
+        if io < len(mo) and len(out) < max_q: out.append((mo[io], 'o')); io += 1
+    return out, len(mt), len(mo)
 
 
 def search(q, loc, start=0):
@@ -102,14 +131,19 @@ def main():
     name = f'lent_li_{SHARD}.json'
     prev = load(name)
     prev = prev if isinstance(prev, dict) else {}
-    mine = [x for i, x in enumerate(QUERIES) if i % SHARDS == SHARD]
-    pos = int(prev.get('pos') or 0) % max(1, len(mine))
-    order = mine[pos:] + mine[:pos]  # après une limite, le passage suivant reprend à la recherche où celui-ci s'est arrêté
-    rows, st = gather(order[:MAX_Q])
+    # après une limite, le passage suivant reprend à la recherche où celui-ci s'est arrêté (une position par famille de recherches)
+    same = prev.get('shards') == SHARDS and prev.get('plan') == PLAN_V
+    pos_t, pos_o = (int(prev.get('pos_t') or 0), int(prev.get('pos_o') or 0)) if same else (0, 0)
+    order, n_t, n_o = plan(SHARD, SHARDS, pos_t, pos_o, MAX_Q)
+    rows, st = gather([q for q, _ in order])
+    done = order[:st['recherches']]
+    pos_t = (pos_t + sum(1 for _, k in done if k == 't')) % max(1, n_t)
+    pos_o = (pos_o + sum(1 for _, k in done if k == 'o')) % max(1, n_o)
     results, pseudo = attach(rows, structs, load('recettes.json') or {})
-    doc = {'updated': NOW_ISO, 'shard': SHARD, 'shards': SHARDS, 'pos': (pos + st['recherches']) % max(1, len(mine)), 'structs': pseudo,
+    doc = {'updated': NOW_ISO, 'shard': SHARD, 'shards': SHARDS, 'plan': PLAN_V, 'pos_t': pos_t, 'pos_o': pos_o, 'structs': pseudo,
            'results': {cid: [raw, info] for cid, (raw, info) in results.items()},
-           'stats': dict(st, lot_recherches=len(mine), structures=len(results), hors_liste=len(pseudo), gardees=sum(len(r) for r, _ in results.values()))}
+           'stats': dict(st, cible=sum(1 for _, k in done if k == 't'), lot_cible=n_t, lot_autres=n_o, structures=len(results), hors_liste=len(pseudo),
+                         gardees=sum(len(r) for r, _ in results.values()))}
     print('linkedin lot %d/%d : ' % (SHARD + 1, SHARDS) + json.dumps(doc['stats'], ensure_ascii=False), flush=True)
     if os.environ.get('LI_DRY') == '1':
         json.dump(doc, open(os.environ.get('LI_DRY_OUT', '/tmp/li_dry.json'), 'w'), ensure_ascii=False)

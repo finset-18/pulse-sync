@@ -7,6 +7,14 @@ on:
       per_host:
         description: "Fiches testées par site"
         default: "15"
+      mode:
+        description: "acces = lecture des fiches ; sources = essai des sources (recettes dédiées, Welcome to the Jungle, LinkedIn à blanc)"
+        type: choice
+        options: [acces, sources]
+        default: acces
+      ids:
+        description: "mode sources : structures à essayer, séparées par des virgules (vide = toutes)"
+        default: ""
 
 permissions:
   contents: read
@@ -30,8 +38,20 @@ jobs:
         env:
           DATA_DIR: ${{ github.workspace }}/store/data
           DIAG_PER_HOST: ${{ inputs.per_host }}
+          MODE: ${{ inputs.mode }}
+          ESSAI_IDS: ${{ inputs.ids }}
+          SHARD: "0"
+          SHARDS: "12"
         run: |
-          s=0; python scripts/diag_acces.py > run.log 2>&1 || s=$?
-          grep '^diag' run.log | cut -c1-400 || true
+          s=0
+          if [ "$MODE" = "sources" ]; then
+            # au fil de l'eau : une source lente ou un arrêt du job ne fait pas perdre les lignes déjà obtenues
+            set -o pipefail
+            python -u scripts/essai.py 2>run.err | tee run.log | grep --line-buffered -E '^(essai|wttj|linkedin lot)' | stdbuf -oL cut -c1-400 || s=$?
+            cat run.err >> run.log
+          else
+            python scripts/diag_acces.py > run.log 2>&1 || s=$?
+            grep '^diag' run.log | cut -c1-400 || true
+          fi
           [ $s -eq 0 ] || grep -E '^(Traceback|  File |[A-Za-z]+(Error|Exception))' run.log | tail -n 12 | cut -c1-200
           exit $s
