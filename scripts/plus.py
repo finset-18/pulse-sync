@@ -200,7 +200,7 @@ def _wttj_row(h, text=''):
     months = h.get('contract_duration_maximum') or h.get('contract_duration_minimum')
     return row('wttj_search', org.get('name'), h.get('name'), f"https://www.welcometothejungle.com/fr/companies/{org['slug']}/jobs/{h['slug']}",
                ', '.join(x for x in (off.get('city'), off.get('country')) if x), iso(h.get('published_at')), h.get('slug'),
-               text + (f' Durée {months} mois.' if months else ''),
+               text[:3000] + (f' Durée {months} mois.' if months else ''),  # 3 000 caractères : assez pour le début, la durée et le contrat, et lent.json reste léger
                'Alternance' if ct == 'apprenticeship' else 'VIE' if ct == 'vie' else INTERN, logo=logo, csite=org.get('website') or org.get('website_url') or '')
 
 

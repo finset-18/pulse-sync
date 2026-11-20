@@ -14,15 +14,7 @@ from sources import merge_dedies
 
 MAX_S = float(os.environ.get('ESSAI_MAX_S', '150'))  # temps maximum d'une source
 
-# recettes à l'essai avant d'entrer dans data/dedies.json (sites de recrutement des cabinets d'audit et de transaction services)
-CANDIDATES = {
-    'ey': [{'m': 'ats', 'k': 'yello', 'v': ['eyglobal.yello.co', 'c1riT--B2O-KySgYWsZO1Q', '29994=France', '29960=Belgium', '30031=Luxembourg', '30080=Switzerland', '30047=Netherlands', '29997=Germany']}],
-    'kpmg': [{'m': 'ats', 'k': 'talentbrew', 'v': 'https://emplois.kpmg.fr'}],
-    'pwc': [{'m': 'ats', 'k': 'workday', 'v': ['pwc.wd3.myworkdayjobs.com', 'pwc', 'Global_Campus_Careers']}],
-    'mazars': [{'m': 'ats', 'k': 'smartrecruiters', 'v': 'MAZARS'}],
-    'gt': [{'m': 'ats', 'k': 'recruitee', 'v': 'carrieresfrance.grant-thornton.fr'}],
-    'bdo': [{'m': 'ats', 'k': 'teamtailor', 'v': 'recrutement.bdo.fr'}],
-}
+CANDIDATES = {}  # {identifiant de structure: [méthodes]} : recettes à essayer avant de les ranger dans data/dedies.json
 
 
 def recipes():
