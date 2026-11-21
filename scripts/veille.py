@@ -396,7 +396,7 @@ LUE = ('ats', 'api', 'html', 'render', 'wttj', 'sitemap')
 def hidden(o):
     """Offre pas encore affichée : rangée dans « stage » par un filtre (LinkedIn, Indeed, Workday…) sans que son intitulé le dise.
     Elle attend la lecture de sa fiche : confirmée, elle est affichée ; sinon elle est fermée (« pas_stage ») sans jamais avoir été montrée."""
-    return o.get('verif') == 1
+    return o.get('verif') in (1, 2)  # 1 : nouvelle annonce ; 2 : offre déjà enregistrée, revérifiée une fois (VERIF_V)
 
 
 def public(out):
@@ -1132,7 +1132,8 @@ def main():
         o['rr_v'] = DATES_V
 
     # vérification unique (VERIF_V) des offres déjà affichées sur la seule foi d'un filtre « stage » (agrégateur ou Workday) : la fiche est relue.
-    # L'offre reste affichée jusqu'au verdict (« old ») ; elle est fermée (« pas_stage ») si sa fiche ne parle pas d'un stage.
+    # L'offre n'est plus affichée jusqu'au verdict : dans l'essai du 21/11/2026 sur les offres ouvertes, 31 fiches LinkedIn sur 32 et 11 fiches
+    # Workday sur 13 ne parlaient pas d'un stage. Confirmée, elle revient avec sa date de détection d'origine ; sinon elle est fermée (« pas_stage »).
     for o in offers.values():
         if o['status'] != 'open' or o.get('vf_v') == VERIF_V: continue
         o['vf_v'] = VERIF_V
@@ -1141,7 +1142,7 @@ def main():
             close(o, 'pas_stage'); verif_n['non'] += 1; continue
         k = reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
         if not k or server_blocked(o, k): continue  # fiche illisible depuis le serveur : laissée telle quelle
-        o['verif'] = 'old'; o['dk'] = k
+        o['verif'] = 2; o['dk'] = k
         for f in ('dk_wait', 'dk_fail', 'dk_round'): o.pop(f, None)
 
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
@@ -1313,7 +1314,7 @@ def main():
             'initial_this_run': sum(1 for i in new_ids if i in offers and offers[i].get('initial')), 'closed_this_run': closed_now - verif_n['non'],
             'failed': failed, 'hors_liste_open': sum(1 for o in pub if o['status'] == 'open' and is_hl(o['company_id']) and not o.get('dup_of')), 'extra': EXTRA, 'tracked': tracked}
     # stages confirmés par la fiche : en attente (pas encore affichées), anciennes en cours de relecture (encore affichées), reconnues « pas un stage »
-    meta['verif'] = {'attente': sum(1 for o in out if o['status'] == 'open' and hidden(o)), 'relecture': sum(1 for o in out if o['status'] == 'open' and o.get('verif') == 'old'),
+    meta['verif'] = {'attente': sum(1 for o in out if o['status'] == 'open' and hidden(o)), 'relecture': sum(1 for o in out if o['status'] == 'open' and o.get('verif') == 2),
                      'pas_stage': sum(1 for o in out if o.get('closed_reason') == 'pas_stage'), 'confirmees_ce_passage': verif_n['ok'], 'ecartees_ce_passage': verif_n['non'],
                      'durees_corrigees_ce_passage': MX_FIXED[0]}
     try: meta['couverture'] = couverture(structs, recettes, pub)
