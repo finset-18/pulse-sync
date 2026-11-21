@@ -365,10 +365,15 @@ CONTRACT_FIELD = re.compile(r"(?:type\s+de\s+contrat|type\s+d['’]\s*emploi|nat
                             r"|\b(?:contrat|contract)\s*:\s*" + _VAL, re.I)
 # expérience passée ou demandée (« une première expérience en stage », « issu d'un stage de 6 mois », « previous internship ») : jamais lue comme le contrat proposé
 _STG = r"(?:stages?|internships?|stagiaires?|summer\s+analyst|praktik\w*)"
+# suite d'une liste d'expériences : « une première expérience en stage, en alternance ou en VIE/CDD/CDI »
+_LIST = (r"(?:\s*(?:,|/|\bou\b|\bet\b|\bor\b|\band\b)\s*(?:(?:en|in|d['’]|de)\s*)?(?:une?\s+)?"
+         r"(?:alternance|apprentissage|v\.?\s?i\.?\s?e\b|cdd|cdi|ann[ée]e\s+de\s+c[ée]sure|c[ée]sure|premier\s+emploi|internships?|stages?|apprenticeships?|placements?))*")
+# « une première expérience (stage de fin d'études, année de césure ou premier emploi) » : la parenthèse détaille l'expérience demandée
+PAST_PAREN = re.compile(r"(?:exp[ée]riences?|experiences?)\s*\([^)]{0,160}\)", re.I)
 PAST_STAGE = re.compile(r"(?:exp[ée]riences?|first\s+experience|r[ée]alis[ée]e?s?|effectu[ée]e?s?|accompli\w*|valid[ée]e?s?|fait|issue?s?|suite\s+[àa]|apr[eè]s|"
                         r"au\s+moins|minimum|dont|y\s+compris|acquise?s?|obtenue?s?|already|completed|done|had|undertaken|gained|acquired|following|including|such\s+as|"
                         r"previous|prior|past|former|relevant|significant|at\s+least|one\s+or\s+more|multiple|several|plusieurs|premi[eè]re?s?|minimum)"
-                        r"(?:\s+[\w’'()/-]+){0,4}?\s+" + _STG + r"\b(?:\s+(?:significatifs?|r[ée]ussis?|similaires?|pr[ée]c[ée]dents?|experience))?|"
+                        r"(?:\s+[\w’'()/-]+){0,4}?\s+\(?" + _STG + r"\b(?:\s+(?:significatifs?|r[ée]ussis?|similaires?|pr[ée]c[ée]dents?|experience))?" + _LIST + r"|"
                         r"\b" + _STG + r"\s+(?:significatifs?|r[ée]ussis?|similaires?|pr[ée]c[ée]dents?|experience|exp[ée]riences?)\b|"
                         r"lors\s+de\s+(?:vos|tes|ses|votre|ton)\s+stages?|au\s+cours\s+de\s+(?:vos|tes|votre|ton)\s+(?:stages?|[ée]tudes)|internships?\s*\(s\)|stage\(s\)|"
                         r"anciens?\s+stagiaires|ex-stagiaires|former\s+interns|our\s+interns\b|nos\s+stagiaires\b|(?:accueill\w*|encadr\w*|form\w*|manag\w*|superv\w*)\s+(?:aussi\s+|[ée]galement\s+)?des\s+stagiaires\b|"
@@ -393,7 +398,7 @@ POS_STAGE = re.compile(
     r"\b(?:this|the)\s+(?:\w+\s+){0,2}?internship\s+(?:is|will|offers|provides|starts|program|programme|position|role|opportunity|runs|lasts)|"
     r"\bas\s+an?\s+(?:\w+\s+){0,2}?intern\b|\b(?:the|an?)\s+(?:\w+\s+){0,1}?intern\s+will\b|\binterns?\s+will\s+(?:be|work|join|gain|support|assist|have)\b|"
     r"\boff[- ]cycle\s+(?:internship|intern|analyst|program(?:me)?|position)|\bsummer\s+(?:internship|intern\b|analyst)|"
-    r"\b(?:pflicht)?praktikum\b|\bpraktikant|\bwerkstudent|\bworking\s+student|\btirocinio\b|\btirocinante|\bpr[aá]cticas\b|\bbecari[oa]\b|\bstagiair\b|\bafstudeerstage|"
+    r"\b(?:pflicht)?praktikum\b|\bpraktikant|\bwerkstudent|\bworking\s+student|\btirocinio\b|\btirocinante|(?<!mejores )(?<!buenas )(?<!las )\bpr[aá]cticas\b(?!\s+(?:de\s+(?:mercado|la\s+industria|desarrollo|seguridad)|[áa]giles|recomendadas|comerciales))|\bbecari[oa]\b|\bstagiair\b|\bafstudeerstage|"
     r"\bindustrial\s+placement|\bplacement\s+year|\byear\s+in\s+industry|\b(?:spring|insight)\s+week|"
     r"contrat\s+(?:d['’]\s*apprentissage|de\s+professionnalisation)|\b(?:poste|offre|contrat)\s+en\s+alternance|rythme\s+(?:d['’]\s*)?alternance|volontariat\s+international", re.I)
 NEG_TEXT = re.compile(r"(?:this|the)\s+(?:\w+\s+){0,2}?(?:is\s+)?(?:not|no)\s+(?:an?\s+)?internship|(?:ce|le)\s+(?:poste|contrat)\s+n['’]\s*est\s+pas\s+un\s+stage", re.I)
@@ -412,8 +417,11 @@ def stage_in_text(text):
     t = clean(text)[:15000]
     if not t: return None
     m = CONTRACT_FIELD.search(t)
-    if m: return _kind(m.group(1) or m.group(2))  # « Type de contrat : CDI » ou « Contract type: Internship » : la fiche le dit en toutes lettres
-    t2 = PAST_STAGE.sub(' ', t)
+    if m:  # « Type de contrat : CDI » ou « Contract type: Internship » : la fiche le dit en toutes lettres
+        # « Job Type: Stagiaire régulier (Trainee) » (RBC) : un conseiller en formation embauché en CDI, pas un stage
+        if re.search(r'^\W{0,3}(?:r[ée]guli[eè]re?|regular|permanent)\b', t[m.end():m.end() + 20], re.I): return None
+        return _kind(m.group(1) or m.group(2))
+    t2 = PAST_STAGE.sub(' ', PAST_PAREN.sub(' ', t))
     if NEG_TEXT.search(t2): return None
     m = POS_STAGE.search(t2)
     if not m: return 'VIE' if VIE_RE.search(t2) else None
