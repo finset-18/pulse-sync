@@ -25,6 +25,7 @@ LI_V = 1  # relecture unique des offres LinkedIn avec le seul bloc de descriptio
 FIX_V = 1  # version de la passe de correction des dates déjà enregistrées (jamais d'effacement : seulement une date écrite qui en remplace une autre)
 DATES_V = 4  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
 MX_V = 1  # correction unique des durées lues dans une phrase d'expérience demandée (« au moins 6 mois d'expérience », « période d'essai de 4 mois »)
+PS_V = 2  # version des règles qui jugent « pas un stage » : une offre fermée avec des règles plus anciennes est rejugée une fois
 VERIF_V = 1  # vérification unique des offres affichées sur la seule foi d'un filtre « stage » (agrégateur, Workday), intitulé sans mot de stage
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
@@ -682,7 +683,7 @@ def check_links(offers, close):
 
 LITE_DROP = ('cand', 'excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
              'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v', 'li_v', 'li_reset', 'nav_dead',
-             'verif', 'vf_v', 'mx_v')
+             'verif', 'vf_v', 'mx_v', 'ps_v')
 
 
 def write_lite(out, updated):
@@ -913,6 +914,7 @@ def main():
     def close(o, reason=None):
         nonlocal closed_now
         o['status'] = 'closed'; o['closed_at'] = NOW_ISO; closed_now += 1
+        if reason == 'pas_stage': o['ps_v'] = PS_V
         if reason: o['closed_reason'] = reason
         else: o.pop('closed_reason', None)
 
@@ -1144,6 +1146,22 @@ def main():
         if not k or server_blocked(o, k): continue  # fiche illisible depuis le serveur : laissée telle quelle
         o['verif'] = 2; o['dk'] = k
         for f in ('dk_wait', 'dk_fail', 'dk_round'): o.pop(f, None)
+    # règles élargies depuis le premier jugement (PS_V : « Summer Financial Analyst », « Co-op », « Estágio », « Intership »…) :
+    # une offre en attente dont l'intitulé est maintenant reconnu est réaffichée ; une offre fermée « pas_stage » avec les anciennes
+    # règles est rouverte si son intitulé est reconnu, sinon sa fiche est relue une fois (cachée en attendant)
+    for o in offers.values():
+        if o['status'] == 'open' and o.get('verif') and not weak_only(o):
+            o.pop('verif', None); verif_n['rouvertes'] += 1
+        if o.get('closed_reason') != 'pas_stage' or o.get('ps_v') == PS_V: continue
+        o['ps_v'] = PS_V
+        if TITLE_CDI.search(o.get('title') or ''): continue
+        k = None if not weak_only(o) else (reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via')))))
+        if weak_only(o) and (not k or server_blocked(o, k)): continue
+        o['status'] = 'open'; o.pop('closed_at', None); o.pop('closed_reason', None); o.pop('miss', None); o['vf_v'] = VERIF_V
+        if weak_only(o):
+            o['verif'] = 2; o['dk'] = k
+            for f in ('dk_wait', 'dk_fail', 'dk_round'): o.pop(f, None)
+        else: verif_n['rouvertes'] += 1
 
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
     new_set = set(new_ids)
@@ -1316,7 +1334,7 @@ def main():
     # stages confirmés par la fiche : en attente (pas encore affichées), anciennes en cours de relecture (encore affichées), reconnues « pas un stage »
     meta['verif'] = {'attente': sum(1 for o in out if o['status'] == 'open' and hidden(o)), 'relecture': sum(1 for o in out if o['status'] == 'open' and o.get('verif') == 2),
                      'pas_stage': sum(1 for o in out if o.get('closed_reason') == 'pas_stage'), 'confirmees_ce_passage': verif_n['ok'], 'ecartees_ce_passage': verif_n['non'],
-                     'durees_corrigees_ce_passage': MX_FIXED[0]}
+                     'durees_corrigees_ce_passage': MX_FIXED[0], 'reaffichees_ce_passage': verif_n['rouvertes']}
     try: meta['couverture'] = couverture(structs, recettes, pub)
     except Exception as e: err('bilan de couverture', e)
     try: meta['dates'] = dates_stats(pub)
