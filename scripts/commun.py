@@ -529,19 +529,17 @@ DUR_BEFORE_SKIP = re.compile(r"(?:dans les|within|every|tous les|toutes les|chaq
 EXP_BEFORE = re.compile(r"(?:dont(?: au moins| minimum)?|including(?: at least)?|of which(?: at least)?|p[ée]riode d['’]\s*essai(?: de| d['’]une dur[ée]e de)?|"
                         r"(?:probation(?:ary)?|trial|notice) period(?: of)?|pr[ée]avis(?: de)?)\s*$", re.I)
 EXP_AFTER = re.compile(r"^['’]?s?\s*(?:minimum\s+|au moins\s+|at least\s+)?(?:d['’]\s*exp[ée]rience|de pratique|of (?:relevant |professional |work )?experience|experience|exp[ée]rience|d['’]anciennet[ée])", re.I)
-# « une expérience de 2 ans en gestion de patrimoine, dont au moins 6 mois en vente » : dans la phrase, le nombre de mois décrit l'expérience
-# demandée, pas le poste — sauf si un mot de durée du poste le précède de plus près (« expérience appréciée. Stage de 6 mois »).
-EXP_NEAR = re.compile(r"exp[ée]riences?|experience|anciennet[ée]|seniority|track record|p[ée]riode d['’]\s*essai|probation|trial period|notice period|pr[ée]avis", re.I)
-DUR_WORD = re.compile(r"stage|intern|dur[ée]e|duration|contrat|contract|mission|placement|praktik|c[ée]sure|alternance|apprentissage|\bcdd\b|programme|program|"
-                      r"p[ée]riode de|[àa] partir|[àa] compter|d[èe]s\b|start|d[ée]but|pour une|for a", re.I)
+# « expérience d'au moins 6 mois », « previous experiences (12 months) » : le nombre de mois suit directement le mot « expérience ».
+# Le lien doit être direct : « gain experience during a 10-week internship » ou « experience, apply for our 18-month Graduate Programme »
+# donnent bien la durée du poste (mesuré sur les offres ouvertes le 21/11/2026 avec le workflow « regles »).
+EXP_LINK = re.compile(r"(?:exp[ée]riences?|experiences?|anciennet[ée]|seniority)\b[\s(:\-–]*"
+                      r"(?:(?:professionnelle|significative|r[ée]ussie|pr[ée]alable|requise|minimale?|minimum|relevant|prior|previous|professional|required|work)\s+){0,2}"
+                      r"(?:(?:de|d['’]|of|en|in)\s*)?(?:(?:au moins|au minimum|minimum|at least|a minimum of|min\.?)\s*(?:de\s+|of\s+)?)?$", re.I)
 
 
 def exp_context(t, pos):
-    """Le nombre de mois placé à « pos » décrit-il une expérience demandée (ou une période d'essai) plutôt que la durée du poste ?"""
-    seg = re.split(r"[.;:!?•\n]|\s-\s", t[max(0, pos - 90):pos])[-1]
-    m = None
-    for m in EXP_NEAR.finditer(seg): pass
-    return bool(m and not DUR_WORD.search(seg[m.end():]))
+    """Le nombre de mois placé à « pos » décrit-il une expérience demandée plutôt que la durée du poste ?"""
+    return bool(EXP_LINK.search(t[max(0, pos - 70):pos]))
 # fenêtre de candidature / date limite : jamais lue comme début ou durée
 WINDOW_CTX = re.compile(r"(?:candidat|application|apply|postul|bewerb|sollicit|solicitud|plazo|recrutement|recruitment|deadline|date limite|entretiens?|interviews?|cl[ôo]tur|closing|publi[ée]|posted|valable|jusqu)", re.I)
 END_GAP = re.compile(r"\b(?:fin|end|ending|until|till|bis|tot|fino|hasta|jusqu\w*|to|au|aux|à|deadline|limite|avant|before|by|cl[ôo]tur\w*|close[sd]?|closing|expir\w*|valable|candidat\w*|applications?|apply|postul\w*)\b", re.I)
