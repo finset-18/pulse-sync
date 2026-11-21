@@ -8,9 +8,9 @@ on:
         description: "Fiches testées par site"
         default: "15"
       mode:
-        description: "acces = lecture des fiches ; sources = essai des sources (recettes dédiées, Welcome to the Jungle, LinkedIn à blanc)"
+        description: "acces = lecture des fiches ; sources = essai des sources (recettes dédiées, Welcome to the Jungle, LinkedIn à blanc) ; verif = offres sans mot de stage dans l'intitulé : leur fiche parle-t-elle d'un stage ?"
         type: choice
-        options: [acces, sources]
+        options: [acces, sources, verif]
         default: acces
       ids:
         description: "mode sources : structures à essayer, séparées par des virgules (vide = toutes)"
@@ -44,10 +44,10 @@ jobs:
           SHARDS: "12"
         run: |
           s=0
-          if [ "$MODE" = "sources" ]; then
+          if [ "$MODE" = "sources" ] || [ "$MODE" = "verif" ]; then
             # au fil de l'eau : une source lente ou un arrêt du job ne fait pas perdre les lignes déjà obtenues
             set -o pipefail
-            python -u scripts/essai.py 2>run.err | tee run.log | grep --line-buffered -E '^(essai|wttj|linkedin lot)' | stdbuf -oL cut -c1-400 || s=$?
+            python -u scripts/essai.py 2>run.err | tee run.log | grep --line-buffered -E '^(essai|wttj|linkedin lot|verif)' | stdbuf -oL cut -c1-400 || s=$?
             cat run.err >> run.log
           else
             python scripts/diag_acces.py > run.log 2>&1 || s=$?

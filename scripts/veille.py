@@ -24,6 +24,8 @@ SCHEMA = 2
 LI_V = 1  # relecture unique des offres LinkedIn avec le seul bloc de description (les anciennes relectures prenaient toute la page)
 FIX_V = 1  # version de la passe de correction des dates déjà enregistrées (jamais d'effacement : seulement une date écrite qui en remplace une autre)
 DATES_V = 4  # version des règles de dates : à chaque changement, les offres sans date écrite sont relues une fois
+MX_V = 1  # correction unique des durées lues dans une phrase d'expérience demandée (« au moins 6 mois d'expérience », « période d'essai de 4 mois »)
+VERIF_V = 1  # vérification unique des offres affichées sur la seule foi d'un filtre « stage » (agrégateur, Workday), intitulé sans mot de stage
 ROBOT_V = 3  # version des règles de classement : à chaque changement, toutes les offres gardées sont reclassées une fois (sans remise à zéro)
 WORKERS = int(os.environ.get('WORKERS', '32'))
 MAX_DETAILS = int(os.environ.get('MAX_DETAILS', '800'))
@@ -180,11 +182,22 @@ def server_blocked(o, key=None):
     return bool(SERVER_BLOCKED.search(str(u)))
 
 
+MX_FIXED = [0]  # durées corrigées à ce passage (expérience demandée lue comme durée)
+
+
 def dates_text(offers):
     """À chaque passage, pour chaque offre ouverte : début et durée relus dans le titre et les passages datés gardés (sans recharger la fiche)."""
     for o in offers.values():
         if o['status'] != 'open': continue
         src = o.get('ctx') or o.get('excerpt') or ''
+        if o.get('mx_v') != MX_V:
+            # une fois : durée enregistrée qui est en fait une expérience demandée ou une période d'essai -> relue avec les règles actuelles
+            # (sauf durée donnée par la plateforme elle-même : sources à API, jamais tirée du texte)
+            o['mx_v'] = MX_V
+            if o.get('months') and o.get('months_src') != 'programme' and o.get('via') not in PLUS and o['months'] in exp_months(src):
+                m = months_with_title(o['title'], src)
+                if m != o['months']:
+                    o['months'] = m if m and m <= 24 else None; o.pop('months_src', None); MX_FIXED[0] += 1
         if not o.get('months') or o.get('months_src') == 'programme':
             m = months_with_title(o['title'], src)
             if m and m <= 24: o['months'] = m; o['months_src'] = 'texte'
@@ -211,7 +224,7 @@ def dates_text(offers):
             o['start'] = r['start']; o['start_src'] = 'texte'
         elif r.get('asap') and weak:
             o['start'] = None; o.pop('start_src', None); o['start_asap'] = 1
-        if r.get('months') and (not o.get('months') or o.get('months_src') in ('programme', 'ia')):
+        if r.get('months') and (not o.get('months') or o.get('months_src') in ('programme', 'ia')) and r['months'] not in exp_months(o.get('ctx') or ''):
             o['months'] = r['months']; o['months_src'] = 'texte'
         o['full'] = 1; o.pop('dk', None); o.pop('dk_wait', None)  # fiche complète lue au navigateur : « non précisé » devient fiable
     # dates lues par le modèle local (job « dates ») : seulement là où rien d'écrit n'a été trouvé, ou à la place d'une estimation
@@ -223,8 +236,8 @@ def dates_text(offers):
             o['start'] = r['start']; o['start_src'] = 'ia'
         elif r.get('asap') and (not o.get('start') or o.get('start_src') in ('programme', 'saison')):
             o['start'] = None; o.pop('start_src', None); o['start_asap'] = 1
-        if r.get('months') and (not o.get('months') or o.get('months_src') == 'programme'):
-            o['months'] = r['months']; o['months_src'] = 'ia'
+        if r.get('months') and (not o.get('months') or o.get('months_src') == 'programme') and r['months'] not in exp_months(o.get('ctx') or o.get('excerpt') or ''):
+            o['months'] = r['months']; o['months_src'] = 'ia'  # jamais un nombre de mois que le texte donne comme expérience demandée
 
 
 def dates_stats(out):
@@ -380,6 +393,17 @@ CIBLE_METIERS = ('M&A', 'Private Equity', 'Venture Capital', 'Transaction Servic
 LUE = ('ats', 'api', 'html', 'render', 'wttj', 'sitemap')
 
 
+def hidden(o):
+    """Offre pas encore affichée : rangée dans « stage » par un filtre (LinkedIn, Indeed, Workday…) sans que son intitulé le dise.
+    Elle attend la lecture de sa fiche : confirmée, elle est affichée ; sinon elle est fermée (« pas_stage ») sans jamais avoir été montrée."""
+    return o.get('verif') in (1, 2)  # 1 : nouvelle annonce ; 2 : offre déjà enregistrée, revérifiée une fois (VERIF_V)
+
+
+def public(out):
+    """Offres que le site et les bilans voient : ni celles en attente de vérification, ni celles reconnues comme n'étant pas des stages."""
+    return [o for o in out if not hidden(o) and o.get('closed_reason') != 'pas_stage']
+
+
 def couverture(structs, recettes, offers):
     """Par famille cible : structures, structures lues par une vraie méthode, structures avec une offre ouverte, offres ouvertes.
     Par métier cible : offres ouvertes, dont celles de sociétés hors liste."""
@@ -439,6 +463,7 @@ def consume_lent(state, results, structs, byid):
             structs.append(p); byid[p['id']] = p
     merge_results(results, agg)
     merge_render(results, rr)
+    PAS_STAGE.update(u for u in doc.get('pas_stage') or [] if isinstance(u, str))  # descriptions complètes sans aucun signe de stage, lues par le passage lent
     dom = doc.get('domaines')
     if isinstance(dom, dict) and dom:
         cache = load('domaines.json') or {}
@@ -473,7 +498,10 @@ def consume_extra(state, results, structs, byid):
             for i in agg.values():
                 i[1].setdefault('ran', []); i[1].setdefault('ok', False); i[1].setdefault('via', ''); i[1].setdefault('err', ''); i[1].setdefault('complete', False)
                 for row in i[0]:  # date de publication toujours au format du robot (avec fuseau) : une date nue faisait planter le calcul des délais
-                    if isinstance(row, dict): row['posted'] = iso(row.get('posted'))
+                    if isinstance(row, dict):
+                        row['posted'] = iso(row.get('posted'))
+                        # recherche LinkedIn (linkedin.py) : type « stage » donné par le filtre de recherche seul, même dans un fichier écrit avant ce marquage
+                        if name.startswith('lent_li_') and row.get('src') == 'linkedin' and not row.get('desc'): row['weak'] = 1
             for p in pseudo:
                 if p['id'] not in byid:
                     structs.append(p); byid[p['id']] = p
@@ -596,7 +624,7 @@ def group_dups(offers, new_ids=()):
     La principale ne change pas quand une offre arrive : les marques posées sur le site restent au bon endroit."""
     groups = {}
     for o in offers.values():
-        if o.get('status') != 'open': continue
+        if o.get('status') != 'open' or hidden(o): continue  # une offre pas encore affichée ne devient jamais la principale d'un groupe
         if not o.get('location'):  # sans lieu, rien ne dit que c'est la même offre
             o.pop('dup_of', None); o.pop('cities', None)
             continue
@@ -653,7 +681,8 @@ def check_links(offers, close):
 
 
 LITE_DROP = ('cand', 'excerpt', 'reread', 'reread2', 'txt2', 'loc_fix', 'start_fix', 'dk', 'dk_fail', 'url_agg', 'link_ck', 'miss', 'ia', 'metier_src', 'contract_src', 'trust',
-             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v', 'li_v', 'li_reset', 'nav_dead')
+             'dl_days', 'dl_day', 'dl_no', 'dk_wait', 'dk_round', 'bad_fix', 'ctx', 'ctx_rr', 'ia_d', 'page_rr', 'full', 'rr_v', 'dkw_fix', 'fix_v', 'li_v', 'li_reset', 'nav_dead',
+             'verif', 'vf_v', 'mx_v')
 
 
 def write_lite(out, updated):
@@ -689,13 +718,17 @@ def write_details(out):
         if load(f'details/{k}.json') != cur: save(f'details/{k}.json', cur)
 
 
-def write_hist(out):
-    """historique.json = {company_id: [{t, c, o, f}]} : jamais purgé, même quand l'offre sort de offers.json."""
+def write_hist(out, drop=()):
+    """historique.json = {company_id: [{t, c, o, f}]} : jamais purgé, même quand l'offre sort de offers.json.
+    drop : identifiants d'offres reconnues comme n'étant pas des stages (elles n'ont rien à faire dans l'historique des stages d'une structure)."""
     p = os.path.join(DATA, 'historique.json')
     h = load('historique.json')
     if h is None and os.path.exists(p) and os.path.getsize(p) > 0:
         raise RuntimeError('historique.json illisible : laissé tel quel')
     h = h or {}
+    if drop:
+        for cid in list(h):
+            if any(e.get('i') in drop for e in h[cid]): h[cid] = [e for e in h[cid] if e.get('i') not in drop]
     by_id = {e['i']: e for lst in h.values() for e in lst if e.get('i')}
     legacy = {(cid, e.get('t'), e.get('o')): e for cid, lst in h.items() for e in lst if not e.get('i')}
     for o in sorted(out, key=lambda o: (o.get('first_seen') or '', o['id'])):
@@ -729,7 +762,7 @@ def stays_closed(o):
     """Fermée pour date limite passée ou année passée : revoir l'annonce en ligne ne la rouvre pas (sauf date limite repoussée,
     ou annonce revue plusieurs jours après sa fermeture : la date était mal lue)."""
     if o.get('status') != 'closed': return False
-    if o.get('closed_reason') == 'annee_passee': return True
+    if o.get('closed_reason') in ('annee_passee', 'pas_stage'): return True  # pas un stage : la revoir en ligne ne la rouvre pas
     if o.get('closed_reason') != 'deadline' or str(o.get('deadline') or '')[:10] >= NOW.date().isoformat(): return False
     day = NOW.date().isoformat()
     if o.get('dl_day') != day:
@@ -957,6 +990,12 @@ def main():
             if x.get('cand'):  # intitulé sans mot de stage, reconnu comme stage par sa fiche
                 o['cand'] = 1
                 if x.get('cand_boot'): o['initial'] = True  # vérifiée à la mise en route : déjà en ligne avant, pas « nouvelle »
+            if x.get('verif'):  # rangée dans « stage » par un filtre, intitulé sans mot de stage : pas affichée tant que sa fiche ne l'a pas confirmé
+                o['verif'] = 1
+                if not o.get('dk'): o['dk'] = list(x['detail']) if x.get('detail') else ['page', o['url']]
+                if server_blocked(o, o['dk']): continue  # fiche illisible depuis le serveur : jamais confirmable, donc jamais enregistrée
+                if o['via'] == 'linkedin': o['li_v'] = LI_V  # fiche lue dès ce passage : pas de seconde relecture
+            o['vf_v'] = VERIF_V
             offers[oid] = o; url_idx[o['url']] = o
             new_ids.append(oid)
             own_titles.add(_norm(o['title']) + '|' + country_of(o.get('location') or ''))
@@ -986,6 +1025,16 @@ def main():
 
     # offres déjà enregistrées qui ne passent plus les filtres : FERMÉES (statut « closed », motif gardé), jamais supprimées
     hors_fin_closed = 0
+    verif_n = Counter()  # vérifications de ce passage : 'ok' confirmées par la fiche, 'non' pas des stages
+
+    def weak_only(o):
+        """Offre gardée sur la seule foi d'un filtre « stage » : ni mot de stage dans l'intitulé, ni fiche déjà reconnue, ni source 100 % stages."""
+        return not (o.get('cand') or o.get('trust') or is_intern(o.get('title') or ''))
+    # description complète reçue d'un agrégateur, sans aucun signe de stage : l'offre déjà enregistrée sous cette adresse est fermée
+    for u in list(PAS_STAGE):
+        o = url_idx.get(u)
+        if o and o['status'] == 'open' and o.get('via') in WEAK_SRC and weak_only(o):
+            o.pop('verif', None); close(o, 'pas_stage'); verif_n['non'] += 1
     # ces offres ne sont revues que par le passage lent : seule une source lue en entier récemment peut conclure à leur absence
     cycles = state.get('cycles') or {}
 
@@ -1082,6 +1131,20 @@ def main():
         if k and not server_blocked(o, k): o['dk'] = k
         o['rr_v'] = DATES_V
 
+    # vérification unique (VERIF_V) des offres déjà affichées sur la seule foi d'un filtre « stage » (agrégateur ou Workday) : la fiche est relue.
+    # L'offre n'est plus affichée jusqu'au verdict : dans l'essai du 21/11/2026 sur les offres ouvertes, 31 fiches LinkedIn sur 32 et 11 fiches
+    # Workday sur 13 ne parlaient pas d'un stage. Confirmée, elle revient avec sa date de détection d'origine ; sinon elle est fermée (« pas_stage »).
+    for o in offers.values():
+        if o['status'] != 'open' or o.get('vf_v') == VERIF_V: continue
+        o['vf_v'] = VERIF_V
+        if o.get('verif') or not weak_only(o) or o.get('via') not in VERIF_VIA: continue
+        if TITLE_CDI.search(o.get('title') or ''):  # l'intitulé annonce un CDI : fermée sans attendre la fiche
+            close(o, 'pas_stage'); verif_n['non'] += 1; continue
+        k = reread_url(o) or reread_key(o, ats_of.get((o['company_id'], o.get('via'))))
+        if not k or server_blocked(o, k): continue  # fiche illisible depuis le serveur : laissée telle quelle
+        o['verif'] = 2; o['dk'] = k
+        for f in ('dk_wait', 'dk_fail', 'dk_round'): o.pop(f, None)
+
     # fiches détaillées : nouvelles offres d'abord, puis rattrapage des anciennes pas encore enrichies
     new_set = set(new_ids)
     need = [offers[i] for i in new_ids if offers[i].get('dk') and not offers[i].get('initial')]
@@ -1095,7 +1158,7 @@ def main():
         if time.time() - t_details > DETAILS_BUDGET_S: return  # gardée pour le passage suivant
         try:
             kind, u = o['dk']; txt, dl, loc, posted = detail_text(kind, u)
-            o['_desc'] = txt; o['deadline'] = o.get('deadline') or dl
+            o['_desc'] = txt; o['_pg'] = 1; o['deadline'] = o.get('deadline') or dl
             loc = loc or location_of(txt)
             if loc and not o['location']: o['location'] = clean(loc)[:120]
             if posted and not o.get('posted') and kind != 'workday': o['posted'] = posted
@@ -1133,12 +1196,21 @@ def main():
 
     def enrich(o):
         c = byid.get(o['company_id'], {}); d = o.pop('_desc', '') or ''; com = o.pop('_commit', '') or ''
+        vk = None
+        if o.pop('_pg', None) and o.get('verif') and len(d) >= 300:  # fiche lue : c'est elle qui dit si l'offre est un stage
+            vk = stage_in_text(d)
+            if not vk:
+                o.pop('verif', None); o.pop('li_reset', None); close(o, 'pas_stage'); verif_n['non'] += 1
+                return
+            if o['verif'] == 1: o['first_seen'] = NOW_ISO  # affichée à partir de maintenant : c'est sa détection pour le site
+            o.pop('verif', None); verif_n['ok'] += 1
         if o.pop('li_reset', None) and d:  # relecture LinkedIn réussie : on repart du texte de la description seule
             o['months'] = None; o.pop('months_src', None); o.pop('start_asap', None)
             if o.get('start_src') in (None, 'texte', 'ia'): o['start'] = None; o.pop('start_src', None)
         if d: texts[o['id']] = d
         ct = contract_of(o['title'] + ' ' + com)
         if o.get('contract_src') != 'ia' and not (o.get('contract') and ct == 'Stage' and not com): o['contract'] = ct  # relecture : garder le contrat déjà trouvé
+        if vk in ('Alternance', 'VIE') and o.get('contract_src') != 'ia': o['contract'] = vk  # type écrit dans la fiche qui vient de confirmer l'offre
         o['domain'] = domain_of(o['title'], d, c.get('fam'))
         # durée et début : seulement s'ils sont écrits (titre, texte, champs de la plateforme) ; sinon null, jamais devinés
         o['months'] = months_with_title(o['title'], d) or o.get('months') or None
@@ -1165,7 +1237,7 @@ def main():
         if o['id'] in new_set or '_desc' in o:
             try: enrich(o)
             except Exception as e:
-                o.pop('_desc', None); o.pop('_commit', None); err('enrichissement ' + str(o.get('id')), e)
+                o.pop('_desc', None); o.pop('_commit', None); o.pop('_pg', None); err('enrichissement ' + str(o.get('id')), e)
 
     # une fois : toutes les offres gardées repassent par les règles actuelles (pays, métier, type de structure, langues, contact)
     if state.get('robot_v') != ROBOT_V:
@@ -1216,9 +1288,10 @@ def main():
     limit = (NOW - dt.timedelta(days=CLOSED_KEEP_DAYS)).isoformat()
     offers = {k: o for k, o in offers.items() if not (o['status'] == 'closed' and (o.get('closed_at') or '') < limit)}
     for o in offers.values():  # champs de travail jamais écrits dans le fichier
-        o.pop('_desc', None); o.pop('_commit', None)
+        o.pop('_desc', None); o.pop('_commit', None); o.pop('_pg', None)
     # ordre du fichier : moment de détection par le robot (first_seen), plus récentes en haut
     out = sorted(offers.values(), key=lambda o: (o.get('first_seen') or '', o.get('posted') or '', o['id']), reverse=True)
+    pub = public(out)  # ce que le site et les bilans voient
 
     # bilan : structures lues, échecs répétés (renvoyés à la découverte et montrés dans Alertes)
     failed = sorted(k for k, n in fails.items() if n >= FAIL_N)
@@ -1233,16 +1306,20 @@ def main():
     meta = {'updated': NOW_ISO, 'run': state['run'], 'seconds': round(time.time() - T0), 'seconds_fast': round(t_fast), 'render': RENDER,
             'structures': sum(1 for c in structs if not is_hl(c['id'])), 'companies_scanned': sum(1 for k, (_, i) in results.items() if not i.get('skip') and not is_hl(k)),
             'companies_ok': len(ok_ids), 'tracked_count': len(tracked), 'via': dict(via.most_common()),
-            'open': sum(1 for o in out if o['status'] == 'open' and not o.get('dup_of')), 'open_with_dups': sum(1 for o in out if o['status'] == 'open'), 'dups': n_dups,
+            'open': sum(1 for o in pub if o['status'] == 'open' and not o.get('dup_of')), 'open_with_dups': sum(1 for o in pub if o['status'] == 'open'), 'dups': n_dups,
             'dead_links_this_run': dead_links, 'annee_passee_this_run': year_closed, 'annee_passee_reopened': year_reopened, 'ia': dict(ia.LAST),
             'cut': len(overrun), 'lent_only': len(state.get('lent_only') or []), 'lent_consumed': bool(lent_new), 'last_full': state.get('last_full') or state.get('last_extra'), 'behind': len(state.get('behind') or []),
             'delay_by_source': delay_stats(state, [offers[i] for i in new_ids if i in offers]),
-            'new_this_run': sum(1 for i in new_ids if i in offers and not offers[i].get('initial')),
-            'initial_this_run': sum(1 for i in new_ids if i in offers and offers[i].get('initial')), 'closed_this_run': closed_now,
-            'failed': failed, 'hors_liste_open': sum(1 for o in out if o['status'] == 'open' and is_hl(o['company_id']) and not o.get('dup_of')), 'extra': EXTRA, 'tracked': tracked}
-    try: meta['couverture'] = couverture(structs, recettes, out)
+            'new_this_run': sum(1 for i in new_ids if i in offers and not offers[i].get('initial') and not hidden(offers[i]) and offers[i]['status'] == 'open'),
+            'initial_this_run': sum(1 for i in new_ids if i in offers and offers[i].get('initial')), 'closed_this_run': closed_now - verif_n['non'],
+            'failed': failed, 'hors_liste_open': sum(1 for o in pub if o['status'] == 'open' and is_hl(o['company_id']) and not o.get('dup_of')), 'extra': EXTRA, 'tracked': tracked}
+    # stages confirmés par la fiche : en attente (pas encore affichées), anciennes en cours de relecture (encore affichées), reconnues « pas un stage »
+    meta['verif'] = {'attente': sum(1 for o in out if o['status'] == 'open' and hidden(o)), 'relecture': sum(1 for o in out if o['status'] == 'open' and o.get('verif') == 2),
+                     'pas_stage': sum(1 for o in out if o.get('closed_reason') == 'pas_stage'), 'confirmees_ce_passage': verif_n['ok'], 'ecartees_ce_passage': verif_n['non'],
+                     'durees_corrigees_ce_passage': MX_FIXED[0]}
+    try: meta['couverture'] = couverture(structs, recettes, pub)
     except Exception as e: err('bilan de couverture', e)
-    try: meta['dates'] = dates_stats(out)
+    try: meta['dates'] = dates_stats(pub)
     except Exception as e: err('bilan des dates', e)
     scanned = meta['companies_scanned'] or 1
     meta.update({'errors': len(ERRS), 'error_list': ERRS[:40], 'failed_sources': sorted(x['id'] for x in failed_now)[:400],
@@ -1259,7 +1336,8 @@ def main():
     updated = NOW_ISO if changed else old_doc.get('updated', NOW_ISO)
     save('offers.json', {'updated': updated, 'offers': out})
     # fichiers dérivés d'offers.json : une panne ici ne touche pas les offres enregistrées
-    for name, f in (('offers-lite', lambda: write_lite(out, updated)), ('details', lambda: write_details(out)), ('historique', lambda: write_hist(out))):
+    not_stage = {o['id'] for o in out if o.get('closed_reason') == 'pas_stage'}
+    for name, f in (('offers-lite', lambda: write_lite(pub, updated)), ('details', lambda: write_details(out)), ('historique', lambda: write_hist(pub, not_stage))):
         try: f()
         except Exception as e: err(name, e)
     meta.update({'errors': len(ERRS), 'error_list': ERRS[:40]})

@@ -9,7 +9,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ['EXTRA'] = '1'  # agregateurs.py lit alors aussi les sources supplémentaires (plus.py)
-from commun import load, save, NOW_ISO, NOW
+from commun import load, save, NOW_ISO, NOW, PAS_STAGE
 from sources import merge_annuaire, merge_dedies, hors_liste, merge_results, AGG
 import veille
 import agregateurs
@@ -142,7 +142,9 @@ def main():
     dom = load('domaines.json') or {}
     doc = {'updated': NOW_ISO, 'seconds': round(time.time() - T0), 'errors': errors, 'structs': hs + pseudo, 'results': res_out, 'render': ren_out,
            'domaines': {k: v for k, v in dom.items() if dom0.get(k) != v}, 'rot': rot, 'cycles': cycles, 'fast_ok': [c for c in quick if c in {s['id'] for s in slow}],
-           'lines': {'read': n_in, 'kept': n_out}}
+           'lines': {'read': n_in, 'kept': n_out},
+           # adresses dont la description complète (Indeed, HelloWork…) ne parle pas d'un stage : veille.py ferme l'offre déjà enregistrée sous cette adresse
+           'pas_stage': sorted(u for u in PAS_STAGE if u)[:3000]}
     if not res_out and not ren_out:
         print('passage lent vide : lent.json laissé tel quel', errors, flush=True)
         return 1

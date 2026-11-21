@@ -51,7 +51,7 @@ def cards(htmltext):
         p, lg = F['posted'].search(c), F['logo'].search(c)
         out.append({'title': t, 'company': _txt(F['company'].search(c)), 'location': _txt(F['location'].search(c))[:120],
                     'url': 'https://www.linkedin.com/jobs/view/' + jid.group(1) if jid else url, 'posted': iso(p.group(1)) if p else None,
-                    'logo': _html.unescape(lg.group(1)) if lg else '', 'ext': 'linkedin:' + (jid.group(1) if jid else url), 'desc': '', 'commit': 'internship', 'src': 'linkedin'})
+                    'logo': _html.unescape(lg.group(1)) if lg else '', 'ext': 'linkedin:' + (jid.group(1) if jid else url), 'desc': '', 'commit': 'internship', 'weak': 1, 'src': 'linkedin'})  # « weak » : type donné par le filtre de recherche, pas lu sur la fiche
     return out
 
 
