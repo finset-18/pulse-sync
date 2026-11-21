@@ -291,10 +291,46 @@ def keep_offer(x, cands=False):
     if is_intern(t): return True
     com = x.get('commit') or ''
     # type de contrat « stage » donné par la plateforme : seuls les vrais seniors sont écartés
-    if com and INTERN_COMMIT.search(com): return bool(not senior_title(t) and not STAFF_ROLE.search(t) and not NAVLIKE.search(t))
+    if com and INTERN_COMMIT.search(com):
+        if senior_title(t) or STAFF_ROLE.search(t) or NAVLIKE.search(t) or TITLE_CDI.search(t): return False
+        # filtre de recherche d'un agrégateur (LinkedIn, Indeed…) ou filtre Workday : ce n'est pas le contrat écrit sur l'offre.
+        # Sans mot de stage dans l'intitulé, la fiche doit le confirmer (mesuré le 21/11/2026 : des CDI « Temps plein » sortaient du filtre « stage » de LinkedIn)
+        if x.get('weak') or x.get('src') in WEAK_SRC: return weak_ok(x)
+        return True
     # intitulé finance sans le mot « stage » (« Analyste M&A – Juillet 2027 ») : c'est la fiche qui tranche
     if com and NOT_STAGE_COMMIT.search(com): return False
     return cand_ok(x, cands)
+
+
+# ---------------------------------------------------------------- type « stage » donné par un filtre, pas par l'offre
+# Un agrégateur range une annonce dans « stage » d'après son propre classement, et sa recherche filtrée renvoie aussi des annonces
+# qui n'y sont pas. Un filtre Workday (« Stagiaire régulier » chez RBC = conseiller en formation, en CDI) peut tromper de la même façon.
+# Quand l'intitulé ne dit pas « stage », l'offre n'est affichée qu'une fois sa fiche lue et le stage confirmé par le texte
+# (champ « Type d'emploi : Stage », « stage de 6 mois », « convention de stage »…) : jamais sur la seule foi du filtre.
+# Indeed, Google, HelloWork : classement fait par l'agrégateur. France Travail (contrat déclaré par l'employeur) et LinkedIn lu par JobSpy
+# (« Employment type » pris sur la fiche même) ne sont pas dans la liste ; la recherche LinkedIn de linkedin.py marque ses lignes « weak »
+# (elle ne connaît que le filtre de recherche, qui renvoie aussi des « Temps plein »).
+# intitulé qui annonce lui-même un CDI (« Manager en Transaction Services - CDI - HF ») sans mot de stage : jamais un stage, quoi que dise le filtre
+TITLE_CDI = re.compile(r"\bcdi\b|\bpermanent\b|dur[ée]e\s+ind[ée]termin[ée]e|\bunbefristet\b|\bfestanstellung\b", re.I)
+WEAK_SRC = ('indeed', 'glassdoor', 'google', 'hellowork')
+VERIF_VIA = WEAK_SRC + ('linkedin', 'workday')  # offres déjà enregistrées à revérifier une fois quand leur intitulé ne dit pas « stage »
+PAS_STAGE = set()   # adresses dont la description complète, reçue de l'agrégateur, ne parle pas d'un stage
+
+
+def weak_ok(x):
+    """Annonce rangée dans « stage » par un filtre, intitulé sans mot de stage. Description déjà là : elle tranche.
+    Sinon l'annonce est gardée avec « verif » : veille.py lit sa fiche avant de l'afficher."""
+    desc = x.get('desc') or ''
+    if len(desc) >= 400:
+        k = stage_in_text(desc)
+        if k:
+            x['commit'] = k
+            return True
+        if len(desc) >= 1500:  # description complète, aucun signe de stage
+            PAS_STAGE.add(x.get('url'))
+            return False
+    x['verif'] = 1
+    return True
 
 
 # ---------------------------------------------------------------- stages dont l'intitulé ne dit pas « stage »
@@ -348,7 +384,8 @@ POS_STAGE = re.compile(
     r"\bce\s+stage\s+(?:est|vous|te|s['’]adresse|permet|offre|a\s+pour|consiste|d[ée]bute|commence|porte|se\s+d[ée]roule|sera|aura|n[ée]cessite|requiert|repr[ée]sente|constitue)|"
     r"(?:seconde|deuxi[èe]me|premi[èe]re|1[èe]re|2[èe]me|2nde)\s+partie\s+de\s+(?:c[ée]sure|ann[ée]e\s+de\s+c[ée]sure)|\bc[ée]sure\s+ou\s+(?:de\s+|en\s+)?(?:stage\s+de\s+)?fin\s+d['’]\s*[ée]tudes|"
     r"fin\s+d['’]\s*[ée]tudes\s+ou\s+(?:de\s+|en\s+)?c[ée]sure|(?:recherch\w*|recrut\w*)\s+(?:des|deux|trois|plusieurs)\s+(?:\w+\s+){0,1}?stagiaires\b|"
-    r"(?:recherch\w*|recrut\w*|rejoindre|accueill\w*|int[ée]grer)\s+(?:un|une|un\(e\)|un\.e|son|sa|notre)\s+(?:\w+\s+){0,2}?(?:futur\w*\s+)?stagiaire\b|"
+    r"(?:recherch\w*|recrut\w*|rejoindre|accueill\w*|int[ée]grer)\s+(?:un|une|un\(e\)|un\.e|un·e|un-e|un/e|son|sa|notre)\s+(?:\w+\s+){0,2}?(?:futur\w*\s+)?stagiaire\b|"
+    r"\b(?:seeking|looking\s+for|hiring|recruiting|searching\s+for|to\s+hire)\s+an?\s+(?:\w+\s+){0,3}?intern\b|\binternship\s+(?:agreement|contract)\b|\bintern\s+(?:position|role|contract)\b|"
     r"(?:en\s+tant\s+que|comme|poste\s+de|position\s+de|statut\s+de|offre\s+de)\s+stagiaire|\bstagiaire\s+(?:analyste|au\s+sein|m&a|dans\s+l['’]\s*[ée]quipe)|"
     r"dans\s+le\s+cadre\s+d['’]\s*(?:un|une|votre|ton)\s+(?:stage|c[ée]sure|ann[ée]e\s+de\s+c[ée]sure)|\bann[ée]e\s+de\s+c[ée]sure|\b(?:en|pour\s+une?|id[ée]al\w*\s+pour\s+une?)\s+c[ée]sure|gap[- ]year|"
     r"\b(?:\d{1,2}|six|three|four|five|nine|twelve)[- ]?months?[- ](?:long\s+|duration\s+)?(?:internship|placement|off[- ]cycle|intern\b)|"
@@ -486,8 +523,25 @@ def domain_of(title, desc, fam):
 
 WEEKS_SKIP = re.compile(r"^\s*(?:of\s+)?(?:paid\s+)?(?:leave|vacation|holiday|annual|notice|cong[ée]s|de cong|de vacances|pr[ée]avis)", re.I)
 # « 6 mois d'expérience », « dans les 6 mois », « tous les 3 mois » : pas une durée de stage
-DUR_AFTER_SKIP = re.compile(r"^\s*(?:minimum\s+|au moins\s+|at least\s+)?(?:d['’]\s*exp[ée]rience|de pratique|of (?:relevant |professional |work )?experience|experience|exp[ée]rience|apr[èe]s|after|ago|plus tard|later|d['’]anciennet[ée])", re.I)
+DUR_AFTER_SKIP = re.compile(r"^['’]?s?\s*(?:minimum\s+|au moins\s+|at least\s+)?(?:d['’]\s*exp[ée]rience|de pratique|of (?:relevant |professional |work )?experience|experience|exp[ée]rience|apr[èe]s|after|ago|plus tard|later|d['’]anciennet[ée])", re.I)
 DUR_BEFORE_SKIP = re.compile(r"(?:dans les|within|every|tous les|toutes les|chaque|il y a|depuis|since|last|derniers?|past|prochains|next|tou?tes? les|d[ée]lai de|pendant les|during the first)\s*$", re.I)
+# « dont au moins 6 mois en vente », « période d'essai de 4 mois », « notice period of 3 months » : expérience demandée ou clause d'un CDI
+EXP_BEFORE = re.compile(r"(?:dont(?: au moins| minimum)?|including(?: at least)?|of which(?: at least)?|p[ée]riode d['’]\s*essai(?: de| d['’]une dur[ée]e de)?|"
+                        r"(?:probation(?:ary)?|trial|notice) period(?: of)?|pr[ée]avis(?: de)?)\s*$", re.I)
+EXP_AFTER = re.compile(r"^['’]?s?\s*(?:minimum\s+|au moins\s+|at least\s+)?(?:d['’]\s*exp[ée]rience|de pratique|of (?:relevant |professional |work )?experience|experience|exp[ée]rience|d['’]anciennet[ée])", re.I)
+# « une expérience de 2 ans en gestion de patrimoine, dont au moins 6 mois en vente » : dans la phrase, le nombre de mois décrit l'expérience
+# demandée, pas le poste — sauf si un mot de durée du poste le précède de plus près (« expérience appréciée. Stage de 6 mois »).
+EXP_NEAR = re.compile(r"exp[ée]riences?|experience|anciennet[ée]|seniority|track record|p[ée]riode d['’]\s*essai|probation|trial period|notice period|pr[ée]avis", re.I)
+DUR_WORD = re.compile(r"stage|intern|dur[ée]e|duration|contrat|contract|mission|placement|praktik|c[ée]sure|alternance|apprentissage|\bcdd\b|programme|program|"
+                      r"p[ée]riode de|[àa] partir|[àa] compter|d[èe]s\b|start|d[ée]but|pour une|for a", re.I)
+
+
+def exp_context(t, pos):
+    """Le nombre de mois placé à « pos » décrit-il une expérience demandée (ou une période d'essai) plutôt que la durée du poste ?"""
+    seg = re.split(r"[.;:!?•\n]|\s-\s", t[max(0, pos - 90):pos])[-1]
+    m = None
+    for m in EXP_NEAR.finditer(seg): pass
+    return bool(m and not DUR_WORD.search(seg[m.end():]))
 # fenêtre de candidature / date limite : jamais lue comme début ou durée
 WINDOW_CTX = re.compile(r"(?:candidat|application|apply|postul|bewerb|sollicit|solicitud|plazo|recrutement|recruitment|deadline|date limite|entretiens?|interviews?|cl[ôo]tur|closing|publi[ée]|posted|valable|jusqu)", re.I)
 END_GAP = re.compile(r"\b(?:fin|end|ending|until|till|bis|tot|fino|hasta|jusqu\w*|to|au|aux|à|deadline|limite|avant|before|by|cl[ôo]tur\w*|close[sd]?|closing|expir\w*|valable|candidat\w*|applications?|apply|postul\w*)\b", re.I)
@@ -565,7 +619,8 @@ def months_of(text):
     t = re.sub(r'\((\d{1,2})\)', r'\1', t)  # « six (6) mois »
     t = t.replace(' ', ' ')
     W = r'\b(\d{1,2}|' + '|'.join(NUMW) + r')'
-    ok = lambda m: not DUR_AFTER_SKIP.search(t[m.end():m.end() + 30]) and not DUR_BEFORE_SKIP.search(t[max(0, m.start() - 25):m.start()])
+    ok = lambda m: (not DUR_AFTER_SKIP.search(t[m.end():m.end() + 30]) and not DUR_BEFORE_SKIP.search(t[max(0, m.start() - 25):m.start()])
+                    and not EXP_BEFORE.search(t[max(0, m.start() - 45):m.start()]) and not exp_context(t, m.start()))
     # « 4 à 6 mois », « 4-6 months », « entre 4 et 6 mois », « 4 or 6 months » : la durée la plus longue
     for m in re.finditer(r'(?:entre\s+|between\s+)?' + W + r'\s*(?:-|–|à|a|to|/|et|and|ou|or)\s*' + W + r'\s*(?:mois|months?|monaten?|maanden|mesi|meses)\b', t):
         a, b = _num(m.group(1)), _num(m.group(2))
@@ -588,6 +643,18 @@ def months_of(text):
     # période écrite en clair : durée calculée
     _, n = period_of(t)
     return n
+
+
+def exp_months(text):
+    """Nombres de mois que le texte cite comme expérience demandée, période d'essai ou préavis : jamais la durée d'un stage."""
+    t = (text or '').lower().replace('\u00a0', ' ')
+    t = re.sub(r'\((\d{1,2})\)', r'\1', t)
+    out = set()
+    for m in re.finditer(r'\b(\d{1,2}|' + '|'.join(NUMW) + r')\s*[- ]?(?:mois|months?|month|monaten?)\b', t):
+        n = _num(m.group(1))
+        if n and (EXP_AFTER.search(t[m.end():m.end() + 30]) or EXP_BEFORE.search(t[max(0, m.start() - 45):m.start()]) or exp_context(t, m.start())):
+            out.add(n)
+    return out
 
 
 def cesure_of(text):
@@ -1080,6 +1147,15 @@ WD_FACET_MAX = int(os.environ.get('WD_FACET_MAX', '1000'))  # offres lues au plu
 WD_INTERN_FACET = re.compile(r"\binterns?\b|internship|\bintern\s*\(|stagiai|\bstages?\b|trainee|praktik|werkstudent|working\s+student|apprenti|alternan|"
                              r"\bstudents?\b|[ée]tudiant|summer|off[- ]?cycle|early\s+careers?|tirocin|pr[aá]cticas|becari|\bv\.?i\.?e\b|volontariat", re.I)
 WD_FACET_SKIP = re.compile(r"locat|country|state|city|region|site|office|area", re.I)
+# libellé qui nomme vraiment un stage ; les autres (« Students », « Early Careers », « Summer ») mêlent stages, graduate programmes et CDI débutants
+WD_STRICT = re.compile(r"\binterns?\b|internship|stagiai|\bstages?\b|\btrainees?\b|praktik|werkstudent|working\s+student|apprenti|alternan|off[- ]?cycle|"
+                       r"tirocin|pr[aá]cticas|becari|\bv\.?i\.?e\b|volontariat", re.I)
+# « Stagiaire régulier » (RBC : conseiller en formation, en CDI), « Graduate / Intern » : pas un type de contrat « stage »
+WD_NOT_STAGE = re.compile(r"regular|r[ée]gulier|permanent|\bcdi\b|unbefristet|indefinido|graduate|dipl[ôo]m|experienced|professional|full[- ]?time|temps plein", re.I)
+
+
+def wd_strict(label):
+    return bool(WD_STRICT.search(label or '') and not WD_NOT_STAGE.search(label or ''))
 
 
 def wd_intern_facets(js):
@@ -1108,9 +1184,13 @@ def j_workday(c, a):
             path = p.get('externalPath') or ''
             if not path or path in seen: continue
             seen.add(path)
-            out.append({'title': p.get('title'), 'url': f'https://{host}/{site}{path}', 'location': p.get('locationsText') or '',
-                        'posted': posted_from_text(p.get('postedOn')), 'ext': path, 'detail': ('workday', base + path), 'commit': commit})
-    # 1. filtres « stage » de la plateforme : toutes les offres de stage, même celles dont l'intitulé ne dit pas « stage » (type de contrat connu)
+            row = {'title': p.get('title'), 'url': f'https://{host}/{site}{path}', 'location': p.get('locationsText') or '',
+                   'posted': posted_from_text(p.get('postedOn')), 'ext': path, 'detail': ('workday', base + path), 'commit': commit}
+            if commit: row['weak'] = 1  # rangée dans un filtre « stage » : sans mot de stage dans l'intitulé, la fiche doit le confirmer
+            out.append(row)
+    # 1. filtres « stage » de la plateforme : toutes les offres de stage, même celles dont l'intitulé ne dit pas « stage ».
+    #    Filtre qui nomme un stage (« Intern (Fixed Term) ») : type de contrat transmis, confirmé par la fiche quand l'intitulé ne le dit pas.
+    #    Filtre large (« Students », « Early Careers ») : offres lues sans type de contrat, l'intitulé décide comme pour une recherche par mots-clés.
     facets = []
     try:
         js = post(base + '/jobs', {'appliedFacets': {}, 'limit': 20, 'offset': 0, 'searchText': ''}).json(); okq += 1
@@ -1125,7 +1205,7 @@ def j_workday(c, a):
             except Exception: errs += 1; facet_err += 1; break
             if off == 0: total = js.get('total')
             posts = js.get('jobPostings') or []
-            add(posts, label if INTERN_COMMIT.search(label) else label + ' (stage)')  # « Students », « Early Careers » : type de contrat reconnu comme stage
+            add(posts, (label if INTERN_COMMIT.search(label) else label + ' (stage)') if wd_strict(label) else '')
             if len(posts) < 20 or (total and off + 20 >= total): break
     # 2. recherche par mots-clés (sites sans filtre de type de poste, intitulés explicites). Quand les filtres « stage » ont tout rendu,
     #    les stages sont déjà là : six mots-clés et trois pages suffisent pour le reste (programmes, intitulés sans type de contrat).

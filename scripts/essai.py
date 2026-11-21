@@ -27,7 +27,41 @@ def recipes():
     return out
 
 
+def verif_audit():
+    """Mode « verif » : relit la fiche des offres ouvertes affichées sur la seule foi d'un filtre « stage » (agrégateur, Workday), intitulé sans
+    mot de stage, et dit pour chacune si sa fiche parle d'un stage. Journal : identifiant interne de l'offre, source et verdict, rien d'autre."""
+    from concurrent.futures import ThreadPoolExecutor
+    import veille
+    budget = float(os.environ.get('VERIF_BUDGET_S', '420'))
+    offers = [o for o in (load('offers.json') or {}).get('offers') or []
+              if o.get('status') == 'open' and o.get('via') in commun.VERIF_VIA and not (o.get('cand') or o.get('trust') or commun.is_intern(o.get('title') or ''))]
+    t0, res = time.time(), Counter()
+
+    def one(o):
+        k = veille.reread_url(o) or veille.reread_key(o, None)
+        if not k or veille.server_blocked(o, k): return o, 'b'
+        if time.time() - t0 > budget: return o, 't'
+        for attempt in range(2):
+            try:
+                txt = detail_text(k[0], k[1])[0] or ''
+                if len(txt) < 300: return o, 'x'
+                return o, ('s' if stage_in_text(txt) else 'n')
+            except Exception:
+                time.sleep(3 + 4 * attempt)
+        return o, 'x'
+    print(f'verif : {len(offers)} offres ouvertes sans mot de stage dans l\'intitulé, gardées sur la foi d\'un filtre', flush=True)
+    with ThreadPoolExecutor(int(os.environ.get('VERIF_WORKERS', '4'))) as ex:
+        for o, v in ex.map(one, offers):
+            res[(o.get('via'), v)] += 1
+            if v in 'sn': print(f"verif : {o['id']} | {o.get('via')} | {'stage' if v == 's' else 'pas un stage'}", flush=True)
+    for via in sorted({k[0] for k in res}):
+        print(f"verif : bilan {via} | stage {res[(via, 's')]} | pas un stage {res[(via, 'n')]} | fiche illisible {res[(via, 'x')]} | "
+              f"site qui bloque le serveur {res[(via, 'b')]} | pas lues (budget) {res[(via, 't')]}", flush=True)
+
+
 def main():
+    if os.environ.get('MODE') == 'verif':
+        return verif_audit()
     structs = load('structures.json') or []
     byid = {c['id']: c for c in structs}
     urls = set()
