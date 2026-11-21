@@ -83,14 +83,17 @@ def official_site(c):
 
 
 # ---------------------------------------------------------------- filtres
-INTERN = re.compile(r"(\bintern\b|\binterns\b|internship|\bstage\b|\bstages\b|stagiaire|off[\s-]?cycle|summer (?:analyst|associate|intern|internship|programme|program)|"
+# « 2028 Summer Financial Analyst », « Investment Banking Summer Financial Analyst » (Houlihan Lokey) : le métier s'intercale entre « summer » et « analyst »
+SUMMER_ROLE = r"summer (?:[\w&-]+ ){0,3}?(?:analyst|associate|intern|internship)"
+INTERN = re.compile(r"(\bintern\b|\binterns\b|internship|\bintership\b|\bstage\b|\bstages\b|stagiaire|off[\s-]?cycle|summer (?:programme|program)|" + SUMMER_ROLE + r"|"
+                    r"est[áa]gio|estagi[áa]ri[oa]|\bbeca\b|\bco-op\b(?=\s*(?:$|[-–—|,:()]|20\d\d|fall\b|winter\b|spring\b|summer\b|term\b))|"
                     r"praktik|werkstudent|\btrainee\b|apprenti|alternan|volontariat international|graduate|spring (?:week|insight)|"
                     r"insight (?:week|programme|program)|industrial placement|placement year|stagiair|afstudeerstage|meeloopstage|tirocinio|pr[aá]cticas|becario|working student|"
                     r"placement analyst|placement (?:student|programme|program|scheme)|\b(?:6|9|12|13)[- ]month placement|year[- ]long placement|co-?op (?:analyst|associate|intern|student|program(?:me)?|position)|\(co-?op\)|student worker|student job|job [ée]tudiant|c[ée]sure|gap[- ]year|fin d['’]\s*[ée]tudes|\bpfe\b|contrat de professionnalisation|contrat pro\b)", re.I)
 INTERN_COMMIT = re.compile(r"intern|stage|stagiaire|apprenti|alternan|trainee|praktik|werkstudent|working student|\bvie\b|graduate", re.I)
 EXCLUDE = re.compile(r"(senior|director|directeur|head of|vice president|\bvp\b|managing|manager(?! intern)|principal\b|partner\b|lead\b|chief|expert confirm)", re.I)
 # mot de stage explicite : « manager », « lead » ou « partner » dans l'intitulé nomment alors le métier (Stage Wealth Manager, Summer Analyst Lead Advisory Team)
-EXPLICIT_STAGE = re.compile(r"\bintern\b|\binterns\b|internship|\bstages?\b|stagiaire|stagiair|off[\s-]?cycle|summer (?:analyst|associate|intern|internship)|praktik|werkstudent|"
+EXPLICIT_STAGE = re.compile(r"\bintern\b|\binterns\b|internship|\bintership\b|\bstages?\b|stagiaire|stagiair|off[\s-]?cycle|" + SUMMER_ROLE + r"|est[áa]gio|estagi[áa]ri[oa]|praktik|werkstudent|"
                             r"working student|\btrainee\b|apprenti|alternan|volontariat international|tirocinio|pr[aá]cticas|becario|placement analyst|co-?op (?:analyst|associate|intern|student)|\(co-?op\)|student worker", re.I)
 # vrais seniors : refusés même avec un mot de stage
 REAL_SENIOR = re.compile(r"senior|\bsr\b|director|directeur|directrice|head of|vice president|\bvp\b|managing|chief|principal\b|expert confirm", re.I)
@@ -397,7 +400,8 @@ POS_STAGE = re.compile(
     r"\binternship\s+(?:program(?:me)?\s+(?:is|will|starts|runs|lasts)|position|opportunity\s+(?:is|will|in|within|at)|role|period|duration|will|is\s+(?:a|an|for|based|open|available|\d)|starts|starting|start\s+date|lasts|of\s+\d|based|offers|runs)|"
     r"\b(?:this|the)\s+(?:\w+\s+){0,2}?internship\s+(?:is|will|offers|provides|starts|program|programme|position|role|opportunity|runs|lasts)|"
     r"\bas\s+an?\s+(?:\w+\s+){0,2}?intern\b|\b(?:the|an?)\s+(?:\w+\s+){0,1}?intern\s+will\b|\binterns?\s+will\s+(?:be|work|join|gain|support|assist|have)\b|"
-    r"\boff[- ]cycle\s+(?:internship|intern|analyst|program(?:me)?|position)|\bsummer\s+(?:internship|intern\b|analyst)|"
+    r"\boff[- ]cycle\s+(?:internship|intern|analyst|program(?:me)?|position)|\bsummer\s+(?:internship|intern\b|analyst|program(?:me)?\b)|\b" + SUMMER_ROLE.replace(' ', r'\s+') + r"\b|"
+    r"\best[áa]gio\b|\bestagi[áa]ri[oa]\b|\bco-op\s+(?:position|term|student|program(?:me)?|placement|role|opportunity)|"
     r"\b(?:pflicht)?praktikum\b|\bpraktikant|\bwerkstudent|\bworking\s+student|\btirocinio\b|\btirocinante|(?<!mejores )(?<!buenas )(?<!las )\bpr[aá]cticas\b(?!\s+(?:de\s+(?:mercado|la\s+industria|desarrollo|seguridad)|[áa]giles|recomendadas|comerciales))|\bbecari[oa]\b|\bstagiair\b|\bafstudeerstage|"
     r"\bindustrial\s+placement|\bplacement\s+year|\byear\s+in\s+industry|\b(?:spring|insight)\s+week|"
     r"contrat\s+(?:d['’]\s*apprentissage|de\s+professionnalisation)|\b(?:poste|offre|contrat)\s+en\s+alternance|rythme\s+(?:d['’]\s*)?alternance|volontariat\s+international", re.I)
